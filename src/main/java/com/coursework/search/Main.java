@@ -1,29 +1,27 @@
 package com.coursework.search;
 
-import io.javalin.Javalin;
-import io.javalin.http.staticfiles.Location;
-import java.util.Map;
+import com.coursework.search.api.ApiServer;
+import com.coursework.search.api.IndexService;
+import java.nio.file.Path;
 
 public final class Main {
   private static final int DEFAULT_PORT = 8080;
+  private static final String DEFAULT_DATASET_DIR = "/data";
 
   private Main() {}
 
   public static void main(String[] args) {
-    createApp().start(port());
-  }
-
-  static Javalin createApp() {
-    Javalin app = Javalin.create(config -> config.staticFiles.add("/static", Location.CLASSPATH));
-    app.get("/api/health", ctx -> ctx.json(Map.of("status", "ok", "ollama", false)));
-    return app;
+    Path datasetDir = Path.of(env("DATASET_DIR", DEFAULT_DATASET_DIR));
+    ApiServer.create(new IndexService(datasetDir)).start(port());
   }
 
   private static int port() {
-    String value = System.getenv("PORT");
-    if (value == null || value.isBlank()) {
-      return DEFAULT_PORT;
-    }
-    return Integer.parseInt(value.trim());
+    String value = env("PORT", null);
+    return value == null ? DEFAULT_PORT : Integer.parseInt(value.trim());
+  }
+
+  private static String env(String name, String fallback) {
+    String value = System.getenv(name);
+    return value == null || value.isBlank() ? fallback : value;
   }
 }
