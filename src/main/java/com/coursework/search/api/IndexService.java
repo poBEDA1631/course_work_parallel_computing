@@ -16,7 +16,11 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Holds the current index and makes sure at most one build runs at a time. */
 public final class IndexService {
-  public record BuiltIndex(InvertedIndex index, BuildResult result, int threads) {}
+  /**
+   * @param docIds the document id of every doc id position, from the same file list the index was
+   *     built from
+   */
+  public record BuiltIndex(InvertedIndex index, BuildResult result, int threads, String[] docIds) {}
 
   private final Path datasetDir;
   private final AtomicBoolean building = new AtomicBoolean();
@@ -42,7 +46,11 @@ public final class IndexService {
       try {
         InvertedIndex index = new InvertedIndex(IndexBuilder.shardCountFor(threads));
         BuildResult result = new IndexBuilder(pool, index).build(files);
-        BuiltIndex built = new BuiltIndex(index, result, threads);
+        String[] docIds = new String[files.size()];
+        for (int i = 0; i < docIds.length; i++) {
+          docIds[i] = DocumentLoader.documentId(files.get(i));
+        }
+        BuiltIndex built = new BuiltIndex(index, result, threads, docIds);
         current.set(built);
         return built;
       } finally {

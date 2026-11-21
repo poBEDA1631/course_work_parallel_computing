@@ -29,6 +29,7 @@ class IndexBuilderTest {
 
   @TempDir Path dir;
   private List<Path> files;
+  private final int[] wordsPerDoc = new int[DOCUMENTS];
 
   @BeforeEach
   void writeCorpus() throws IOException {
@@ -36,6 +37,7 @@ class IndexBuilderTest {
       SplittableRandom random = new SplittableRandom(doc);
       StringBuilder text = new StringBuilder();
       int words = 10 + random.nextInt(200);
+      wordsPerDoc[doc] = words;
       for (int w = 0; w < words; w++) {
         // Mixed case and punctuation exercise the tokenizer; "word<n>" survives stemming as is.
         text.append(random.nextBoolean() ? "Word" : "word")
@@ -90,6 +92,26 @@ class IndexBuilderTest {
     }
   }
 
+  @ParameterizedTest
+  @ValueSource(ints = {1, 4, 16})
+  void recordsTokenCountOfEveryDocument(int threads) throws Exception {
+    BuildResult result = buildResult(files, threads);
+    long total = 0;
+    for (int doc = 0; doc < DOCUMENTS; doc++) {
+      assertEquals(wordsPerDoc[doc], result.docLengths()[doc], "doc " + doc);
+      total += wordsPerDoc[doc];
+    }
+    assertEquals((double) total / DOCUMENTS, result.averageDocLength(), 1e-9);
+  }
+
+  @Test
+  void docLengthCountsStemmedTokensOfMixedText() throws Exception {
+    Files.writeString(dir.resolve("zz-extra.txt"), "Parties, MOVIES... and   the parties!");
+    files = DocumentLoader.listDocuments(dir);
+    BuildResult result = buildResult(files, 2);
+    assertEquals(5, result.docLengths()[files.size() - 1]);
+  }
+
   @Test
   void unreadableFileIsSkippedWithoutFailingTheBuild() throws Exception {
     Files.delete(files.get(10));
@@ -99,6 +121,12 @@ class IndexBuilderTest {
       BuildResult result = new IndexBuilder(pool, index).build(files);
       assertEquals(DOCUMENTS - 1, result.documentsIndexed());
       assertEquals(1, result.documentsSkipped());
+      assertEquals(0, result.docLengths()[10]);
+      long total = 0;
+      for (int doc = 0; doc < DOCUMENTS; doc++) {
+        total += doc == 10 ? 0 : wordsPerDoc[doc];
+      }
+      assertEquals((double) total / (DOCUMENTS - 1), result.averageDocLength(), 1e-9);
       for (int t = 0; t < VOCABULARY; t++) {
         Postings p = index.search("word" + t);
         for (int i = 0; p != null && i < p.size(); i++) {
@@ -125,6 +153,16 @@ class IndexBuilderTest {
       InvertedIndex index = new InvertedIndex(IndexBuilder.shardCountFor(threads));
       new IndexBuilder(pool, index).build(files);
       return index;
+    } finally {
+      shutdown(pool);
+    }
+  }
+
+  private static BuildResult buildResult(List<Path> files, int threads) throws Exception {
+    ThreadPool pool = new ThreadPool(threads);
+    try {
+      InvertedIndex index = new InvertedIndex(IndexBuilder.shardCountFor(threads));
+      return new IndexBuilder(pool, index).build(files);
     } finally {
       shutdown(pool);
     }

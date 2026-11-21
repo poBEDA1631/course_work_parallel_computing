@@ -1,5 +1,6 @@
 package com.coursework.search.api;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -67,6 +68,16 @@ class ApiServerTest {
     assertEquals(body.get("time_ms").asLong(), stats.get("index_build_time_ms").asLong());
     assertEquals(2, stats.get("threads_used").asInt());
     assertEquals(3, stats.size());
+  }
+
+  @Test
+  void builtIndexKeepsDocIdsOfTheFilesItWasBuiltFrom() throws Exception {
+    IndexService service = new IndexService(dataset);
+    IndexService.BuiltIndex built = service.rebuild(2);
+    Files.writeString(dataset.resolve("A000.txt"), "added after the build");
+    assertArrayEquals(new String[] {"B001", "B002", "B003"}, built.docIds());
+    assertArrayEquals(new String[] {"B001", "B002", "B003"}, service.current().get().docIds());
+    assertEquals(3, built.result().docLengths().length);
   }
 
   @ParameterizedTest

@@ -46,23 +46,32 @@ public final class IndexBuilder {
   public BuildResult build(List<Path> files) throws InterruptedException, ExecutionException {
     long start = System.nanoTime();
     List<List<Path>> batches = DocumentLoader.batches(files);
+    // Each batch writes only its own [firstDocId, firstDocId + batch size) range, so tasks never
+    // touch the same element; TaskHandle.get() makes those writes visible to this thread.
+    int[] docLengths = new int[files.size()];
     @SuppressWarnings("unchecked")
     TaskHandle<Integer>[] handles = new TaskHandle[batches.size()];
     for (int b = 0; b < batches.size(); b++) {
       List<Path> batch = batches.get(b);
       int firstDocId = b * DocumentLoader.BATCH_SIZE;
-      handles[b] = pool.submit(() -> indexBatch(batch, firstDocId));
+      handles[b] = pool.submit(() -> indexBatch(batch, firstDocId, docLengths));
     }
     int skipped = 0;
     for (TaskHandle<Integer> handle : handles) {
       skipped += handle.get();
     }
     long timeMs = (System.nanoTime() - start) / 1_000_000;
-    return new BuildResult(files.size() - skipped, skipped, timeMs);
+    int indexed = files.size() - skipped;
+    long totalLength = 0;
+    for (int length : docLengths) {
+      totalLength += length;
+    }
+    double averageDocLength = indexed == 0 ? 0 : (double) totalLength / indexed;
+    return new BuildResult(indexed, skipped, timeMs, docLengths, averageDocLength);
   }
 
   /** Returns the number of skipped files. */
-  private int indexBatch(List<Path> batch, int firstDocId) {
+  private int indexBatch(List<Path> batch, int firstDocId, int[] docLengths) {
     LocalAccumulator local = new LocalAccumulator();
     int skipped = 0;
     for (int i = 0; i < batch.size(); i++) {
@@ -77,7 +86,14 @@ public final class IndexBuilder {
         continue;
       }
       int docId = firstDocId + i;
-      Tokenizer.forEachToken(text, token -> local.add(Stemmer.stem(token), docId));
+      int[] length = {0};
+      Tokenizer.forEachToken(
+          text,
+          token -> {
+            local.add(Stemmer.stem(token), docId);
+            length[0]++;
+          });
+      docLengths[docId] = length[0];
     }
     index.mergeFrom(local);
     return skipped;
