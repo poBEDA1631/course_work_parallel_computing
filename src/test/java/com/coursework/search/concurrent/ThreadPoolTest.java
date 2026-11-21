@@ -25,8 +25,13 @@ import org.junit.jupiter.api.Timeout;
 class ThreadPoolTest {
   private ThreadPool pool;
 
+  /** Tasks that must not finish yet wait on this; released first in teardown even on failure. */
+  private final CountDownLatch release = new CountDownLatch(1);
+
   @AfterEach
   void tearDown() throws InterruptedException {
+    // A failed assertion would otherwise leave workers parked forever and keep the JVM alive.
+    release.countDown();
     if (pool != null) {
       pool.shutdown();
       assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS));
@@ -112,7 +117,6 @@ class ThreadPoolTest {
   void submitBlocksWhileQueueIsFull() throws Exception {
     pool = new ThreadPool(1);
     CountDownLatch started = new CountDownLatch(1);
-    CountDownLatch release = new CountDownLatch(1);
     TaskHandle<Void> blocker =
         pool.submit(
             () -> {
@@ -219,7 +223,6 @@ class ThreadPoolTest {
   @Test
   void shutdownDrainsQueuedTasksAndRejectsNewOnes() throws Exception {
     pool = new ThreadPool(2);
-    CountDownLatch gate = new CountDownLatch(1);
     AtomicInteger executed = new AtomicInteger();
     int tasks = pool.workerCount() + pool.queueCapacity();
     @SuppressWarnings("unchecked")
@@ -228,7 +231,7 @@ class ThreadPoolTest {
       handles[i] =
           pool.submit(
               () -> {
-                awaitQuietly(gate);
+                awaitQuietly(release);
                 executed.incrementAndGet();
               });
     }
@@ -238,7 +241,7 @@ class ThreadPoolTest {
     assertFalse(pool.awaitTermination(50, TimeUnit.MILLISECONDS));
     assertEquals(0, executed.get());
 
-    gate.countDown();
+    release.countDown();
     assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS));
     assertEquals(tasks, executed.get());
     for (TaskHandle<Void> handle : handles) {
@@ -251,7 +254,6 @@ class ThreadPoolTest {
   void shutdownRejectsProducerBlockedOnFullQueue() throws Exception {
     pool = new ThreadPool(1);
     CountDownLatch started = new CountDownLatch(1);
-    CountDownLatch release = new CountDownLatch(1);
     pool.submit(
         () -> {
           started.countDown();
