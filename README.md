@@ -28,8 +28,31 @@ Services:
 |---|---|
 | `ollama` | Ollama server, models are kept in the `ollama-models` volume |
 | `ollama-init` | one-shot `ollama pull llama3.2:3b`, then exits |
-| `dataset-init` | one-shot dataset preparation into the `dataset` volume, then exits |
+| `dataset-init` | one-shot corpus download and preparation into the `dataset` volume, then exits |
 | `search` | backend and static Web UI, starts after `dataset-init` completes |
+
+## Dataset
+
+Source: [Amazon Reviews 2023](https://amazon-reviews-2023.github.io) (McAuley Lab, UCSD),
+categories `Movies_and_TV` and `CDs_and_Vinyl` (review and meta `jsonl.gz` files).
+
+`dataset-init` (`scripts/fetch_dataset.py`, image `dataset-init/Dockerfile`) turns them into one
+English text file per product, `<DATASET_DIR>/<parent_asin>.txt`: the product title, its
+description and the title and text of its reviews. The document id is the file name without
+`.txt`.
+
+- Review files are streamed and only read until each category's half of the size budget is
+  filled, so they are never downloaded in full; meta files are streamed to attach titles and
+  descriptions.
+- The budget is `DATASET_MAX_BYTES` (default `1500000000`, about 1.5 GB) and counts the final
+  files. Products that do not fit are dropped whole.
+- On success `.complete` is written into the directory. If it exists, later runs do nothing;
+  if it is missing (an interrupted run), the directory's `.txt` files are deleted and the corpus
+  is built again.
+
+The first start downloads both meta files in full (about 0.5 GB compressed) and the beginning of
+both review files, and took about 15 minutes in testing; the result is about 611,000 documents,
+1.5 GB of text.
 
 ## Building locally
 
@@ -57,3 +80,70 @@ Response `200`:
 ```json
 {"status": "ok", "ollama": false}
 ```
+
+### `POST /api/index`
+
+Builds a new index over every `.txt` file in `DATASET_DIR` and responds when the build is
+finished. The previous index, if any, stays in use until the new one is complete.
+
+Request:
+
+| Field | Type | Description |
+|---|---|---|
+| `threads` | integer | worker threads, `1` to `256` |
+
+Response `200`:
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | `"ok"` |
+| `documents_indexed` | integer | documents in the new index (unreadable files are skipped) |
+| `time_ms` | integer | build time in milliseconds |
+
+```json
+{"status": "ok", "documents_indexed": 611120, "time_ms": 74611}
+```
+
+Errors: `400` for a malformed body or `threads` out of range, `409` if a build is already
+running, `500` if the dataset cannot be read.
+
+### `GET /api/stats`
+
+Statistics of the last successful build; during a rebuild it still reports the previous one.
+
+Response `200`:
+
+| Field | Type | Description |
+|---|---|---|
+| `documents` | integer | documents in the index |
+| `index_build_time_ms` | integer | build time in milliseconds |
+| `threads_used` | integer | worker threads used for the build |
+
+```json
+{"documents": 611120, "index_build_time_ms": 74611, "threads_used": 8}
+```
+
+Errors: `409` if no index has been built yet.
+
+### Errors
+
+Every error has status `400`, `409` or `500` and the body:
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | `"error"` |
+| `message` | string | human-readable reason |
+
+```json
+{"status": "error", "message": "index has not been built yet"}
+```
+
+## Indexing
+
+- Tokens are maximal runs of letters and digits, lower-cased.
+- A light suffix stemmer (not Porter) tries, in order, `ies -> y`, `-es`, `-ing`, `-ed`, `-ly`,
+  `-s` (not after `s`) and applies the first rule that leaves a stem of at least 3 characters.
+  Known inaccuracies are accepted: `movies -> movy`, `running -> runn`.
+- Files are split into batches of 64; each batch is one thread pool task that reads its files,
+  accumulates term frequencies locally and merges them into the shared index once.
+- The index has the smallest power-of-two number of shards that is at least `4 x threads`.
