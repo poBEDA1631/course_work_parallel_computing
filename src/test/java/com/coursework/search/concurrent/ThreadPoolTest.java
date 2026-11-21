@@ -23,6 +23,8 @@ import org.junit.jupiter.api.Timeout;
 
 @Timeout(value = 30, unit = TimeUnit.SECONDS)
 class ThreadPoolTest {
+  private static final long PARK_DEADLINE_NANOS = TimeUnit.SECONDS.toNanos(10);
+
   private ThreadPool pool;
 
   /** Tasks that must not finish yet wait on this; released first in teardown even on failure. */
@@ -293,12 +295,27 @@ class ThreadPoolTest {
   /**
    * Spins until the thread is parked on a {@code Condition} (not merely contending for the lock),
    * which for a producer means it is waiting on {@code notFull}.
+   *
+   * <p>Bounded by {@link #PARK_DEADLINE_NANOS}: a busy loop ignores the interrupt JUnit's
+   * {@code @Timeout} sends, so without a deadline a thread parked anywhere else would hang the run.
    */
   private static void awaitParkedOnCondition(Thread thread) {
+    long start = System.nanoTime();
     while (!(thread.getState() == Thread.State.WAITING
         && LockSupport.getBlocker(thread) instanceof AbstractQueuedSynchronizer.ConditionObject)) {
-      if (thread.getState() == Thread.State.TERMINATED) {
+      Thread.State state = thread.getState();
+      if (state == Thread.State.TERMINATED) {
         throw new AssertionError(thread.getName() + " terminated instead of blocking");
+      }
+      if (System.nanoTime() - start > PARK_DEADLINE_NANOS) {
+        throw new AssertionError(
+            thread.getName()
+                + " did not park on a Condition within "
+                + TimeUnit.NANOSECONDS.toSeconds(PARK_DEADLINE_NANOS)
+                + " s; state "
+                + state
+                + ", blocker "
+                + LockSupport.getBlocker(thread));
       }
       Thread.onSpinWait();
     }
