@@ -1,0 +1,62 @@
+services:
+  ollama:
+    image: ollama/ollama:0.40.16
+    volumes:
+      - ollama-models:/root/.ollama
+    networks:
+      - search-net
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  ollama-init:
+    image: ollama/ollama:0.40.16
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "llama3.2:3b"]
+    restart: "no"
+    networks:
+      - search-net
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  dataset-init:
+    image: alpine:3.20
+    command: ["sh", "-c", "echo 'dataset-init: nothing to do yet'"]
+    restart: "no"
+    volumes:
+      - dataset:/data
+    networks:
+      - search-net
+
+  search:
+    build: .
+    environment:
+      PORT: ${PORT:-8080}
+      DATASET_DIR: /data
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    volumes:
+      - dataset:/data:ro
+    networks:
+      - search-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:$${PORT}/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      dataset-init:
+        condition: service_completed_successfully
+
+volumes:
+  ollama-models:
+  dataset:
+
+networks:
+  search-net:
