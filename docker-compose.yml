@@ -1,6 +1,10 @@
 services:
   ollama:
     image: ollama/ollama:0.40.16
+    environment:
+      # Never unload the model: a cold load takes longer than the 5 s expansion timeout, and
+      # Ollama aborts a load whose client has disconnected.
+      OLLAMA_KEEP_ALIVE: "-1"
     volumes:
       - ollama-models:/root/.ollama
     networks:
@@ -16,7 +20,27 @@ services:
     image: ollama/ollama:0.40.16
     environment:
       OLLAMA_HOST: http://ollama:11434
-    entrypoint: ["ollama", "pull", "llama3.2:3b"]
+      OLLAMA_MODEL: llama3.2:3b
+      WARMUP_PROMPT: |-
+        You expand short search queries into related keywords for a movie and music review search engine. Respond with ONLY a comma-separated list of 3 to 8 related keywords, no explanation.
+
+        Query: "scary movies"
+        Keywords: horror, thriller, suspense, halloween, frightening, slasher
+
+        Query: "guitar music"
+        Keywords: rock, acoustic, strings, instrumental, band, blues
+
+        Query: "warm up"
+        Keywords:
+    # Pull, then run the expansion prompt once (same text as QueryExpansionService) so the model
+    # is loaded and the shared prompt prefix is already evaluated before the first real query.
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        ollama pull "$$OLLAMA_MODEL"
+        ollama run "$$OLLAMA_MODEL" "$$WARMUP_PROMPT" > /dev/null
+        echo "model $$OLLAMA_MODEL pulled and loaded"
     restart: "no"
     networks:
       - search-net
@@ -42,6 +66,8 @@ services:
     environment:
       PORT: ${PORT:-8080}
       DATASET_DIR: /data
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: llama3.2:3b
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
     volumes:
