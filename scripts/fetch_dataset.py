@@ -2,12 +2,14 @@
 
 Reviews are streamed (never downloaded in full) and staged per product until each category's
 byte budget is spent; the meta files are then streamed to prepend each staged product's title
-and description, writing documents until the budget, which counts the final files, is spent. A .complete marker is written last, so an interrupted run is redone from
-scratch instead of leaving a partial corpus behind.
+and description, writing documents until the budget, which counts the final files, is spent.
+A dropped connection is resumed with an HTTP Range request. A .complete marker is written last,
+so a run that still fails is redone from scratch instead of leaving a partial corpus behind.
 """
 
 import gzip
 import html
+import http.client
 import io
 import json
 import os
@@ -25,6 +27,9 @@ FLUSH_BYTES = 64 * 1024 * 1024
 PROGRESS_BYTES = 100 * 1024 * 1024
 TAG = re.compile(r"<[^>]+>")
 SAFE_ASIN = re.compile(r"^[A-Za-z0-9]+$")
+READ_TIMEOUT_SECONDS = 120
+MAX_RESUMES = 5
+RESUME_PAUSE_SECONDS = 10
 
 
 def log(message):
@@ -35,10 +40,78 @@ def clean(text):
     return " ".join(html.unescape(TAG.sub(" ", text or "")).split())
 
 
+class RangeNotSupported(Exception):
+    """Resuming is impossible; not an OSError, so it is never retried."""
+
+
+class ResumableDownload(io.RawIOBase):
+    """Bytes of one URL; after a dropped connection, continues from the next byte with Range.
+
+    The gzip decoder reading from it never notices a resume, because the byte stream it sees is
+    the same. Up to MAX_RESUMES consecutive failures are retried, with growing pauses.
+    """
+
+    def __init__(self, url):
+        self.url = url
+        self.offset = 0
+        self.length = None
+        self.response = None
+        self._connect()
+
+    def _connect(self):
+        headers = {"Range": f"bytes={self.offset}-"} if self.offset else {}
+        request = urllib.request.Request(self.url, headers=headers)
+        response = urllib.request.urlopen(request, timeout=READ_TIMEOUT_SECONDS)
+        if self.offset and response.status != 206:
+            response.close()
+            raise RangeNotSupported(f"server ignored the Range request (HTTP {response.status})")
+        if self.length is None:
+            length = response.headers.get("Content-Length")
+            self.length = int(length) if length is not None else None
+        self.response = response
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        failures = 0
+        while True:
+            try:
+                if self.response is None:
+                    self._connect()
+                n = self.response.readinto(buffer)
+                if n == 0 and self.length is not None and self.offset < self.length:
+                    raise http.client.IncompleteRead(b"", self.length - self.offset)
+                self.offset += n
+                return n
+            except (OSError, http.client.HTTPException) as e:
+                failures += 1
+                if failures > MAX_RESUMES:
+                    raise
+                pause = RESUME_PAUSE_SECONDS * failures
+                log(f"connection lost at byte {self.offset} of {self.url.rsplit('/', 1)[-1]}: "
+                    f"{e!r}; resuming in {pause} s ({failures}/{MAX_RESUMES})")
+                self._drop()
+                time.sleep(pause)
+
+    def _drop(self):
+        if self.response is not None:
+            try:
+                self.response.close()
+            except OSError:
+                pass
+            self.response = None
+
+    def close(self):
+        self._drop()
+        super().close()
+
+
 def stream_jsonl(url):
-    response = urllib.request.urlopen(url, timeout=120)
-    lines = io.TextIOWrapper(gzip.GzipFile(fileobj=response), encoding="utf-8", errors="replace")
-    return response, lines
+    download = ResumableDownload(url)
+    buffered = io.BufferedReader(download, buffer_size=1024 * 1024)
+    lines = io.TextIOWrapper(gzip.GzipFile(fileobj=buffered), encoding="utf-8", errors="replace")
+    return download, lines
 
 
 def reset(out_dir):

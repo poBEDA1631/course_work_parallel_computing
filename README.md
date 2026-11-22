@@ -48,9 +48,18 @@ description and the title and text of its reviews. The document id is the file n
   descriptions.
 - The budget is `DATASET_MAX_BYTES` (default `1500000000`, about 1.5 GB) and counts the final
   files. Products that do not fit are dropped whole.
+- A dropped connection (network failure, the host going to sleep) is resumed with an HTTP
+  `Range` request from the last byte read, up to 5 times in a row with growing pauses.
 - On success `.complete` is written into the directory. If it exists, later runs do nothing;
   if it is missing (an interrupted run), the directory's `.txt` files are deleted and the corpus
   is built again.
+
+The resume logic has standard-library tests (there is no CI for the Python scripts; run them by
+hand):
+
+```sh
+python3 -m unittest discover -s scripts/tests -v
+```
 
 The first start downloads both meta files in full (about 0.5 GB compressed) and the beginning of
 both review files, and took about 15 minutes in testing; the result is about 611,000 documents,
