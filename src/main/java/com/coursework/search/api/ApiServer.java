@@ -1,5 +1,6 @@
 package com.coursework.search.api;
 
+import com.coursework.search.query.KeywordSearch;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
@@ -7,6 +8,7 @@ import io.javalin.Javalin;
 import io.javalin.http.Context;
 import io.javalin.http.staticfiles.Location;
 import io.javalin.json.JavalinJackson;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -20,6 +22,8 @@ public final class ApiServer {
   record IndexResponse(String status, int documentsIndexed, long timeMs) {}
 
   record StatsResponse(int documents, long indexBuildTimeMs, int threadsUsed) {}
+
+  record SearchResponse(List<KeywordSearch.Result> results, long timeMs) {}
 
   record ErrorResponse(String status, String message) {}
 
@@ -64,6 +68,28 @@ public final class ApiServer {
                   built.result().documentsIndexed(), built.result().timeMs(), built.threads()));
         });
 
+    app.post(
+        "/api/search",
+        ctx -> {
+          String query = parseSearchQuery(mapper, ctx);
+          // During a rebuild this is still the previous, complete index.
+          IndexService.BuiltIndex built =
+              indexService
+                  .current()
+                  .orElseThrow(() -> new ApiException(409, "index has not been built yet"));
+          long start = System.nanoTime();
+          List<KeywordSearch.Result> results =
+              new KeywordSearch(
+                      built.index(),
+                      built.docIds(),
+                      built.result().docLengths(),
+                      built.result().averageDocLength(),
+                      built.result().documentsIndexed(),
+                      indexService.datasetDir())
+                  .search(query);
+          ctx.json(new SearchResponse(results, (System.nanoTime() - start) / 1_000_000));
+        });
+
     app.exception(
         ApiException.class,
         (e, ctx) -> ctx.status(e.status()).json(new ErrorResponse("error", e.getMessage())));
@@ -78,13 +104,7 @@ public final class ApiServer {
 
   /** Requires {@code {"threads": N}} with an integral N in [1, MAX_THREADS]. */
   private static int parseThreads(ObjectMapper mapper, Context ctx) {
-    JsonNode body;
-    try {
-      body = mapper.readTree(ctx.body());
-    } catch (Exception e) {
-      throw new ApiException(400, "request body must be JSON");
-    }
-    JsonNode threads = body == null ? null : body.get("threads");
+    JsonNode threads = readBody(mapper, ctx).get("threads");
     if (threads == null || !threads.isIntegralNumber() || !threads.canConvertToInt()) {
       throw new ApiException(400, "\"threads\" must be an integer");
     }
@@ -93,5 +113,32 @@ public final class ApiServer {
       throw new ApiException(400, "\"threads\" must be between 1 and " + MAX_THREADS);
     }
     return value;
+  }
+
+  /** Requires {@code {"query": string, "mode": "keyword"}}. */
+  private static String parseSearchQuery(ObjectMapper mapper, Context ctx) {
+    JsonNode body = readBody(mapper, ctx);
+    JsonNode query = body.get("query");
+    if (query == null || !query.isTextual()) {
+      throw new ApiException(400, "\"query\" must be a string");
+    }
+    JsonNode mode = body.get("mode");
+    if (mode == null || !mode.isTextual() || !mode.asText().equals("keyword")) {
+      throw new ApiException(400, "\"mode\" must be \"keyword\"");
+    }
+    return query.asText();
+  }
+
+  private static JsonNode readBody(ObjectMapper mapper, Context ctx) {
+    JsonNode body;
+    try {
+      body = mapper.readTree(ctx.body());
+    } catch (Exception e) {
+      throw new ApiException(400, "request body must be JSON");
+    }
+    if (body == null || !body.isObject()) {
+      throw new ApiException(400, "request body must be a JSON object");
+    }
+    return body;
   }
 }

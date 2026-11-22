@@ -63,6 +63,10 @@ public final class IndexService {
     }
   }
 
+  public Path datasetDir() {
+    return datasetDir;
+  }
+
   public Optional<BuiltIndex> current() {
     return Optional.ofNullable(current.get());
   }
