@@ -1,0 +1,9 @@
+#!/bin/sh
+# Command-line search client: ./search [--host HOST] [--port PORT] QUERY...
+# Runs the client inside the already running "search" container (docker compose up), so the host
+# needs no Java. The server's own $PORT is passed first; a --port given here overrides it.
+set -e
+dir=$(cd "$(dirname "$0")" && pwd)
+exec docker compose -f "$dir/docker-compose.yml" exec -T search \
+  sh -c 'exec java -cp /app/search.jar com.coursework.search.cli.SearchCli --port "$PORT" "$@"' \
+  search "$@"
