@@ -66,6 +66,10 @@ services:
     # The index lives only in memory: after a crash the API comes back without one, and
     # /api/health and the UI work again until it is rebuilt.
     restart: unless-stopped
+    # Leaves room for the loaded Ollama model (about 3 GB) on an 8 GB Docker VM. The JVM sizes its
+    # heap from this limit (MaxRAMPercentage=75 in the Dockerfile, about 3.4 GB), which holds one
+    # index of the full corpus (about 1.9 GB) plus the garbage of a build.
+    mem_limit: 4.5g
     environment:
       PORT: ${PORT:-8080}
       DATASET_DIR: /data
