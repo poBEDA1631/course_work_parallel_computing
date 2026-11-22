@@ -162,9 +162,62 @@ Response `200`:
 Errors: `400` for a malformed body, a non-string `query` or a `mode` other than `"keyword"`;
 `409` if no index has been built yet.
 
+### WebSocket `/ws/search`
+
+Search with query expansion, answered in stages. A connection handles one request at a time;
+every request ends with exactly one `done` or one `error` message.
+
+Client message:
+
+| Field | Type | Description |
+|---|---|---|
+| `query` | string | free text |
+
+Server messages, in order:
+
+1. `query_expansion`
+
+   | Field | Type | Description |
+   |---|---|---|
+   | `stage` | string | `"query_expansion"` |
+   | `data.original` | string | the query as sent |
+   | `data.expanded_terms` | array of string | expansion keywords that add a stem the query does not have; `[]` when Ollama is unavailable, slow or adds nothing |
+
+2. `keyword_search`
+
+   | Field | Type | Description |
+   |---|---|---|
+   | `stage` | string | `"keyword_search"` |
+   | `data.results` | array | same objects as `POST /api/search` (`doc_id`, `score`, `snippet`) |
+   | `data.time_ms` | integer | search time in milliseconds |
+
+3. `done`: `{"stage": "done"}`
+
+```json
+{"stage": "query_expansion", "data": {"original": "jazz piano", "expanded_terms": ["improvisation", "classical", "blues", "swing", "solo", "instrumental"]}}
+{"stage": "keyword_search", "data": {"results": [{"doc_id": "B000005GZH", "score": 1.0, "snippet": "like either one of them, you will be thrilled to own this CD, Thank you. Wonderful instrumental piano ..."}, ...], "time_ms": 44}}
+{"stage": "done"}
+```
+
+Ranking: the user's terms have weight 1.0, expansion stems not already in the query 0.5 (a
+term in both counts once, at 1.0). Snippets are cut around the user's own words only. With an
+empty expansion the results equal `POST /api/search` for the same query.
+
+Errors are sent as `{"stage": "error", "message": string}` and leave the connection open:
+
+| Message | When |
+|---|---|
+| `request already in progress` | a message arrives before the current request's `done`/`error`; the message is ignored and the current request continues |
+| `message must be {"query": string}` | the message is not JSON or `query` is not a string |
+| `index has not been built yet` | no index exists (Ollama is not called) |
+| `server busy, try again later` | 24 requests (8 running, 16 queued) are already in flight across all connections |
+| `keyword search failed` | the search itself failed (not expected in normal operation) |
+
+During a rebuild the previous index answers, as for `POST /api/search`.
+
 ### Errors
 
-Every error has status `400`, `409` or `500` and the body:
+Every HTTP error has status `400`, `409` or `500` and the body:
 
 | Field | Type | Description |
 |---|---|---|
