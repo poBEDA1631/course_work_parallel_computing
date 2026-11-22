@@ -54,6 +54,43 @@ The first start downloads both meta files in full (about 0.5 GB compressed) and 
 both review files, and took about 15 minutes in testing; the result is about 611,000 documents,
 1.5 GB of text.
 
+## Command-line client
+
+`com.coursework.search.cli.SearchCli` is a thin client for `/ws/search` on a running server; it
+does no indexing or ranking itself.
+
+```sh
+./search jazz piano
+./search "good movies about space"
+```
+
+`./search` runs the client inside the running `search` container (`docker compose exec`), so the
+host needs only Docker, not Java. It connects to the server's own port; `--host` and `--port`
+override the target. All other words form one query.
+
+With Java 21 on the host the client can also be run from the sources (default target
+`localhost:8080`):
+
+```sh
+./mvnw -q compile exec:java -Dexec.mainClass="com.coursework.search.cli.SearchCli" -Dexec.args="jazz piano"
+```
+
+```text
+Expanding query...
+Expanded with: improvisation, classical, blues, swing, solo, instrumental
+
+Results (10 found, 18 ms):
+1. [1.00] B000005GZH
+   like either one of them, you will be thrilled to own this CD, Thank you. Wonderful instrumental piano ...
+2. [0.95] B0013RDZXI
+   Mike Garson's Jazz Hat Classical Music Nice little Jazz album Mike Garson is most famous for being ...
+```
+
+Exit code `0` after a complete answer, including `No results.`; `1` with a message on stderr for
+a server error, no server, no answer within 30 s, or a missing query or bad option (usage is
+printed and nothing is sent). If the stack is not up, `./search` fails with Docker's
+`service "search" is not running`.
+
 ## Building locally
 
 Requires JDK 21.
