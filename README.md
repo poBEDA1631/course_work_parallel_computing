@@ -17,7 +17,7 @@ docker compose up -d --build
 curl localhost:8080/api/health
 ```
 
-On the first start `ollama-init` downloads the `llama3.2:3b` model (about 2 GB).
+On the first start `ollama-init` downloads the `llama3.2:3b` model (about 2 GB) and loads it.
 Until it is available, `/api/health` reports `"ollama": false`; the backend does not wait for it.
 
 The host port can be changed with the `PORT` variable, e.g. `PORT=9090 docker compose up -d`.
@@ -27,7 +27,7 @@ Services:
 | Service | Role |
 |---|---|
 | `ollama` | Ollama server, models are kept in the `ollama-models` volume |
-| `ollama-init` | one-shot `ollama pull llama3.2:3b`, then exits |
+| `ollama-init` | one-shot `ollama pull llama3.2:3b` and a warm-up run of the expansion prompt, then exits |
 | `dataset-init` | one-shot corpus download and preparation into the `dataset` volume, then exits |
 | `search` | backend and static Web UI, starts after `dataset-init` completes |
 
@@ -75,11 +75,14 @@ Response `200`:
 | Field | Type | Description |
 |---|---|---|
 | `status` | string | `"ok"` while the service is up |
-| `ollama` | boolean | whether the Ollama model is available |
+| `ollama` | boolean | whether Ollama answered `GET /api/tags` within 1 s and lists the configured model |
 
 ```json
-{"status": "ok", "ollama": false}
+{"status": "ok", "ollama": true}
 ```
+
+Ollama is checked on every call. The status is `200` even when Ollama is down or the model has
+not been pulled yet; only `ollama` changes.
 
 ### `POST /api/index`
 
@@ -181,6 +184,27 @@ Every error has status `400`, `409` or `500` and the body:
 - Files are split into batches of 64; each batch is one thread pool task that reads its files,
   accumulates term frequencies locally and merges them into the shared index once.
 - The index has the smallest power-of-two number of shards that is at least `4 x threads`.
+
+## Query expansion
+
+`com.coursework.search.ollama` asks Ollama (`POST {OLLAMA_URL}/api/generate`, model
+`OLLAMA_MODEL`, default `http://ollama:11434` and `llama3.2:3b`) for related keywords with a
+fixed few-shot prompt, temperature 0 and a 5 s timeout.
+
+- The answer is split on commas, trimmed, lower-cased; empty entries and entries longer than
+  3 words or 40 characters (sentences rather than keywords) are dropped, duplicates removed
+  keeping the first occurrence, and at most 8 terms kept.
+- A timeout, an unreachable server or an error status gives an empty list instead of an error,
+  so search runs on the original query.
+- Answers are cached in a bounded LRU of 256 entries keyed by the trimmed, lower-cased query.
+  Failures are not cached.
+- The `ollama` service keeps the model loaded (`OLLAMA_KEEP_ALIVE=-1`) and `ollama-init` runs the
+  expansion prompt once after the pull. A cold load takes much longer than 5 s, and Ollama
+  aborts a load whose client has disconnected, so without the warm-up every expansion would
+  time out. Warm calls take about 2-3 s on 8 CPU cores.
+
+Example (`llama3.2:3b`, CPU): `space movies` -> `science fiction, alien, galaxy, cosmos,
+adventure, blockbuster, extraterrestrial`.
 
 ## Ranking
 
