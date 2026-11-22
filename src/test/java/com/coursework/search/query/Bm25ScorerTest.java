@@ -2,6 +2,7 @@ package com.coursework.search.query;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.coursework.search.index.InvertedIndex;
@@ -72,6 +73,39 @@ class Bm25ScorerTest {
         scorer.score(new String[] {"space"}),
         scorer.score(new String[] {"space", "space", "space"}),
         EPS);
+  }
+
+  @Test
+  void weightScalesATermContribution() {
+    double[] full = scorer.score(new String[] {"space"});
+    double[] half = scorer.score(new String[] {"space"}, new double[] {0.5});
+    for (int doc = 0; doc < full.length; doc++) {
+      assertEquals(full[doc] * 0.5, half[doc], EPS);
+    }
+  }
+
+  @Test
+  void weightedTermsAreSummedPerTerm() {
+    // space at 1.0 + movie at 0.5 for doc 0: 0.56657... + 0.5 * 0.39019...
+    double[] scores = scorer.score(new String[] {"space", "movie"}, new double[] {1.0, 0.5});
+    assertEquals(0.5665797174469143 + 0.5 * 0.39019169220400696, scores[0], EPS);
+    assertEquals(0.5 * 0.47000362924573563, scores[1], EPS);
+  }
+
+  @Test
+  void duplicateTermTakesItsLargestWeightAndIsNotSummed() {
+    double[] original = scorer.score(new String[] {"space"});
+    assertArrayEquals(
+        original, scorer.score(new String[] {"space", "space"}, new double[] {1.0, 0.5}), EPS);
+    assertArrayEquals(
+        original, scorer.score(new String[] {"space", "space"}, new double[] {0.5, 1.0}), EPS);
+  }
+
+  @Test
+  void rejectsMismatchedWeights() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> scorer.score(new String[] {"space"}, new double[] {1.0, 0.5}));
   }
 
   @Test
