@@ -45,7 +45,7 @@ class SearchApiTest {
         "Festival Live\n"
             + "Concert footage and crowd shots. ".repeat(12)
             + "\n\nSo many parties!");
-    app = ApiServer.create(new IndexService(dataset)).start(0);
+    app = ApiServer.create(new IndexService(dataset), StubTags.offline()).start(0);
   }
 
   @AfterEach

@@ -32,7 +32,7 @@ class ApiServerTest {
     Files.writeString(dataset.resolve("B001.txt"), "The Matrix. Great movies!");
     Files.writeString(dataset.resolve("B002.txt"), "Kind of Blue, jazz record");
     Files.writeString(dataset.resolve("B003.txt"), "Another movie review");
-    app = ApiServer.create(new IndexService(dataset)).start(0);
+    app = ApiServer.create(new IndexService(dataset), StubTags.offline()).start(0);
   }
 
   @AfterEach
@@ -41,11 +41,28 @@ class ApiServerTest {
   }
 
   @Test
-  void healthReportsOkWithoutOllama() throws Exception {
+  void healthReportsOllamaFalseWhenItIsUnreachable() throws Exception {
     HttpResponse<String> response = get("/api/health");
     assertEquals(200, response.statusCode());
     assertEquals(
         JSON.readTree("{\"status\":\"ok\",\"ollama\":false}"), JSON.readTree(response.body()));
+  }
+
+  @Test
+  void healthFollowsTheRealAvailabilityOnEveryCall() throws Exception {
+    try (StubTags ollama = new StubTags()) {
+      app.stop();
+      app = ApiServer.create(new IndexService(dataset), ollama.client()).start(0);
+
+      ollama.models = "[]";
+      assertEquals(false, JSON.readTree(get("/api/health").body()).get("ollama").asBoolean());
+      ollama.models = "[{\"name\": \"llama3.2:3b\"}]";
+      assertEquals(true, JSON.readTree(get("/api/health").body()).get("ollama").asBoolean());
+      ollama.status = 503;
+      HttpResponse<String> response = get("/api/health");
+      assertEquals(200, response.statusCode());
+      assertEquals(false, JSON.readTree(response.body()).get("ollama").asBoolean());
+    }
   }
 
   @Test
@@ -102,7 +119,8 @@ class ApiServerTest {
   @Test
   void missingDatasetDirectoryIsServerError() throws Exception {
     app.stop();
-    app = ApiServer.create(new IndexService(dataset.resolve("missing"))).start(0);
+    app =
+        ApiServer.create(new IndexService(dataset.resolve("missing")), StubTags.offline()).start(0);
     assertError(post("/api/index", "{\"threads\": 1}"), 500);
   }
 

@@ -1,5 +1,6 @@
 package com.coursework.search.api;
 
+import com.coursework.search.ollama.OllamaClient;
 import com.coursework.search.query.KeywordSearch;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,7 +30,7 @@ public final class ApiServer {
 
   private ApiServer() {}
 
-  public static Javalin create(IndexService indexService) {
+  public static Javalin create(IndexService indexService, OllamaClient ollama) {
     ObjectMapper mapper =
         new ObjectMapper().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
     Javalin app =
@@ -39,7 +40,8 @@ public final class ApiServer {
               config.staticFiles.add("/static", Location.CLASSPATH);
             });
 
-    app.get("/api/health", ctx -> ctx.json(new HealthResponse("ok", false)));
+    // Checked on every call: the endpoint is cheap and rarely hit, so no background polling.
+    app.get("/api/health", ctx -> ctx.json(new HealthResponse("ok", ollama.isAvailable())));
 
     app.post(
         "/api/index",
