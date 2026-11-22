@@ -3,6 +3,8 @@ package com.coursework.search;
 import com.coursework.search.api.ApiServer;
 import com.coursework.search.api.IndexService;
 import com.coursework.search.ollama.OllamaClient;
+import com.coursework.search.ollama.QueryExpansionCache;
+import com.coursework.search.ollama.QueryExpansionService;
 import java.nio.file.Path;
 
 public final class Main {
@@ -18,7 +20,8 @@ public final class Main {
     OllamaClient ollama =
         new OllamaClient(
             env("OLLAMA_URL", DEFAULT_OLLAMA_URL), env("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL));
-    ApiServer.create(new IndexService(datasetDir), ollama).start(port());
+    QueryExpansionService expansion = new QueryExpansionService(ollama, new QueryExpansionCache());
+    ApiServer.create(new IndexService(datasetDir), ollama, expansion).start(port());
   }
 
   private static int port() {

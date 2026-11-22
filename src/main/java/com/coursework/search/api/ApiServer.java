@@ -1,6 +1,7 @@
 package com.coursework.search.api;
 
 import com.coursework.search.ollama.OllamaClient;
+import com.coursework.search.ollama.QueryExpansionService;
 import com.coursework.search.query.KeywordSearch;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -30,14 +31,17 @@ public final class ApiServer {
 
   private ApiServer() {}
 
-  public static Javalin create(IndexService indexService, OllamaClient ollama) {
+  public static Javalin create(
+      IndexService indexService, OllamaClient ollama, QueryExpansionService expansion) {
     ObjectMapper mapper =
         new ObjectMapper().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
+    SearchSocket searchSocket = new SearchSocket(indexService, expansion, mapper);
     Javalin app =
         Javalin.create(
             config -> {
               config.jsonMapper(new JavalinJackson(mapper, false));
               config.staticFiles.add("/static", Location.CLASSPATH);
+              config.events(events -> events.serverStopped(searchSocket::shutdown));
             });
 
     // Checked on every call: the endpoint is cheap and rarely hit, so no background polling.
@@ -91,6 +95,8 @@ public final class ApiServer {
                   .search(query);
           ctx.json(new SearchResponse(results, (System.nanoTime() - start) / 1_000_000));
         });
+
+    app.ws("/ws/search", searchSocket::configure);
 
     app.exception(
         ApiException.class,
