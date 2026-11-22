@@ -17,6 +17,8 @@ docker compose up -d --build
 curl localhost:8080/api/health
 ```
 
+Then open http://localhost:8080 for the Web UI, or use the command-line client below.
+
 On the first start `ollama-init` downloads the `llama3.2:3b` model (about 2 GB) and loads it.
 Until it is available, `/api/health` reports `"ollama": false`; the backend does not wait for it.
 
@@ -29,7 +31,7 @@ Services:
 | `ollama` | Ollama server, models are kept in the `ollama-models` volume |
 | `ollama-init` | one-shot `ollama pull llama3.2:3b` and a warm-up run of the expansion prompt, then exits |
 | `dataset-init` | one-shot corpus download and preparation into the `dataset` volume, then exits |
-| `search` | backend and static Web UI, starts after `dataset-init` completes |
+| `search` | backend and static Web UI, starts after `dataset-init` completes; restarts after a crash (without an index) |
 
 ## Dataset
 
@@ -53,6 +55,21 @@ description and the title and text of its reviews. The document id is the file n
 The first start downloads both meta files in full (about 0.5 GB compressed) and the beginning of
 both review files, and took about 15 minutes in testing; the result is about 611,000 documents,
 1.5 GB of text.
+
+## Web UI
+
+`src/main/resources/static/` (plain HTML, CSS and JavaScript, no build step), served at `/`.
+
+- The header badge shows `Ollama: online` or `offline` from `GET /api/health`, polled every 5 s.
+- The index block builds or rebuilds the index (`POST /api/index` with the chosen number of
+  threads, 1 to 256) and shows the statistics from `GET /api/stats`. While a build runs, started
+  from this page or elsewhere, it shows `Building...` and waits for the build to finish.
+- Each search opens its own WebSocket to `/ws/search` and shows the stages as they arrive:
+  `Expanding query...`, the expansion terms as badges (or `No expansion.`), then the results with
+  scores and snippets (or `No results.`). Errors appear in a red banner. Starting a new search
+  closes the previous connection and ignores its late messages.
+- Text from the server, including snippets from the documents, is inserted as text only, never as
+  HTML.
 
 ## Command-line client
 
