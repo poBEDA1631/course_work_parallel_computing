@@ -124,6 +124,19 @@ class ApiServerTest {
   }
 
   @Test
+  void servesTheWebUi() throws Exception {
+    HttpResponse<String> page = get("/");
+    assertEquals(200, page.statusCode());
+    assertTrue(page.body().contains("<title>Parallel Search</title>"), page.body());
+    for (String asset : new String[] {"/app.js", "/style.css"}) {
+      HttpResponse<String> response = get(asset);
+      assertEquals(200, response.statusCode(), asset);
+      assertTrue(page.body().contains("\"" + asset + "\""), asset + " is not referenced");
+    }
+    assertTrue(get("/app.js").body().contains("/ws/search"));
+  }
+
+  @Test
   void unknownRouteIsStillNotFound() throws Exception {
     assertEquals(404, get("/api/nope").statusCode());
   }
