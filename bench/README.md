@@ -77,13 +77,16 @@ depend on the CPU, the disk and the Docker memory settings.
   column the WebSocket latency could be misread as the model's response time; the plot labels
   every WebSocket point with `expanded/completed`.
 
-**Why the WebSocket path flattens out: Ollama generates one request at a time.** The `ollama`
-service runs with the default `OLLAMA_NUM_PARALLEL=1`, so concurrent expansions queue inside
-Ollama. One expansion takes about 2-3 s on 8 CPU cores, so with two or more clients the queue
-alone exceeds the 5 s timeout: most requests then wait the full 5 s, get no expansion and search
-the original query. Throughput is bounded by roughly (pool workers) / 5 s and latency by the 5 s
-timeout plus waiting in the server's pool (8 workers, 16 queued; beyond 24 requests in flight the
-server answers `server busy`). The limit is the model's parallelism, not BM25 or the pool.
+**Why the WebSocket path flattens out: the model's CPU inference speed.** One expansion takes
+about 2-3 s of `llama3.2:3b` running on the CPU (8 vCPU). Ollama runs with the default
+`OLLAMA_NUM_PARALLEL=1`, so concurrent expansions queue inside it, and with two or more clients
+the queue alone exceeds the 5 s timeout: most requests then wait the full 5 s, get no expansion
+and search the original query. Throughput is bounded by roughly (pool workers) / 5 s and latency
+by the 5 s timeout plus waiting in the server's pool (8 workers, 16 queued; beyond 24 requests in
+flight the server answers `server busy`). The queue is a symptom, not the cause: E3 below shows
+that a second Ollama slot does not help, because both slots share the same CPU. The limit is the
+model's inference throughput on the CPU (tokens per second), not the number of Ollama slots,
+BM25 or the pool.
 
 **Worst case on purpose: a cold expansion cache.** Queries are generated from domain word lists
 (adjectives, genres, topics, artists: about 310,000 distinct 2-3 word queries, shuffled with a
@@ -128,3 +131,88 @@ client ran on the same Mac (Python 3.9, outside the Docker VM). 3 trials of 20 s
 They are reproducible on another machine with `run_e2.py` followed by `plot_e2.py`; restart
 `search` and rebuild the index first for a cold expansion cache. Absolute numbers depend on the
 CPU, Docker settings and where the client runs.
+
+## E3: bottlenecks
+
+### The M4 build-time anomaly
+
+During M4 the index was built once with 8 threads in 74.6 s and then rebuilt with 4 threads in
+82.9 s: doubling the threads seemed to gain almost nothing. Later measurements of the same thread
+counts show that neither number measured the parallel build itself:
+
+| Build | When and how | Time |
+|---|---|---|
+| 8 threads | M4, the first build after `dataset-init`: every file read from disk | 74.6 s |
+| 8 threads | M5, the next 8-thread build, same code, files already in the page cache | 38.8 s |
+| 4 threads | M4, a rebuild while the previous index was still alive (before `d929c32`) | 82.9 s |
+| 4 threads | M7, a rebuild after `d929c32` released the old index first | 55.9 s |
+| 4 / 8 threads | E1 (warm-up build, memory limit of `10677f6`), mean of 3 runs | 46.3 s / 28.7 s |
+
+- The 8-thread number was inflated by a cold page cache: the first build after the corpus is
+  written reads all 611,120 files from disk, the next one from memory. E1 therefore starts with an
+  unrecorded warm-up build.
+- The 4-thread rebuild was slowed by two complete indexes in the heap at once (about 1.9 GB
+  each): the old one stayed in use until the new one was ready, so the garbage collector had far
+  less room. `d929c32` releases the old index before a rebuild.
+- With both effects removed, 4 to 8 threads gives 46.3 s to 28.7 s (1.6x), in line with the rest
+  of E1. The memory limit of `10677f6` fixed a later, different problem: once the Ollama model
+  stayed loaded (M6), an unbounded heap next to it got the container OOM-killed. It did not exist
+  in M4, when the model was not kept in memory.
+
+### Is Ollama's parallelism the bottleneck? (`OLLAMA_NUM_PARALLEL` 1 against 2)
+
+E2 suggested that the WebSocket plateau comes from Ollama generating one request at a time. To
+check it, the WebSocket part of E2 was run twice with the same clients, window and query order:
+once with the project's `OLLAMA_NUM_PARALLEL=1` and once, temporarily, with 2. The project keeps
+1; the setting was changed only for this run, through a Compose override file outside the
+repository.
+
+```sh
+# baseline: the project's setting
+docker compose restart search && curl -X POST localhost:8080/api/index -d '{"threads": 8}'
+.venv/bin/python bench/run_e3.py --num-parallel 1
+
+# two slots, from an override file (not part of the project)
+printf 'services:\n  ollama:\n    environment:\n      OLLAMA_NUM_PARALLEL: "2"\n' > /tmp/np2.yml
+docker compose -f docker-compose.yml -f /tmp/np2.yml up -d --force-recreate ollama ollama-init
+docker compose restart search && curl -X POST localhost:8080/api/index -d '{"threads": 8}'
+.venv/bin/python bench/run_e3.py --num-parallel 2 --append
+
+# back to the project's setting
+docker compose up -d --force-recreate ollama ollama-init
+.venv/bin/python bench/plot_e3.py
+```
+
+- `run_e3.py` reuses E2's clients and query pool and adds a `num_parallel` column; Ollama does not
+  report the setting over its API, so it is a label given by the caller. Before each run `search`
+  is restarted (an empty expansion cache, since both runs send the same queries) and the model is
+  warmed up again by `ollama-init`.
+- Output: `bench/e3_num_parallel.csv` (the E2 columns plus `num_parallel`) and
+  `bench/e3_num_parallel.png` with WebSocket throughput and the share of answers that carried an
+  expansion, per client count and setting (mean of 3 trials, min-max).
+
+Results (2026-11-22, same machine as E1 and E2, 3 trials of 20 s):
+
+| Clients | req/s, 1 slot | req/s, 2 slots | expanded, 1 slot | expanded, 2 slots | p95, 1 slot | p95, 2 slots |
+|---|---|---|---|---|---|---|
+| 1 | 0.43 (0.30-0.60) | 0.32 (0.20-0.40) | 24 / 26 (89 %) | 15 / 19 (71 %) | 3.56 s | 4.21 s |
+| 2 | 0.43 (0.40-0.50) | 0.40 (0.40-0.40) | 21 / 26 (79 %) | 14 / 24 (58 %) | 5.04 s | 5.12 s |
+| 4 | 0.67 (0.65-0.70) | 0.68 (0.65-0.70) | 10 / 40 (25 %) | 7 / 41 (17 %) | 5.22 s | 5.46 s |
+| 8 | 1.30 (1.25-1.35) | 1.28 (1.25-1.30) | 7 / 78 (9 %) | 4 / 77 (5 %) | 5.13 s | 5.19 s |
+
+- **A second slot does not help; it makes expansions slightly rarer at every client count.**
+  Throughput is unchanged (it is still set by the 5 s timeout and the pool), and the share of
+  expanded answers drops (79 % to 58 % at 2 clients). With two slots the successful Ollama calls
+  took 3.8 s in the median, against the 2-3 s seen for single calls earlier (the M6 manual run
+  and Ollama's log during E2; recreating the `ollama` container dropped the log of this
+  baseline). The model runs entirely on the CPU (`ollama ps`: `100% CPU`), and two parallel
+  generations split the same 8 vCPU, so each one is slower and fewer of them finish within 5 s.
+- **The bottleneck is the model's inference throughput on the CPU, not Ollama's parallelism.**
+  `OLLAMA_NUM_PARALLEL=1` only decides how that fixed capacity is shared; the queue in E2 exists
+  because one expansion costs 2-3 s of CPU. Remedies would have to add compute or remove work:
+  a GPU, a smaller model, shorter answers, a longer timeout, or cache hits on repeated queries.
+- With two slots the model took 3.4 GB instead of 2.9 GB (a second KV cache), which next to the
+  4.5 GB limit of `search` nearly fills the 7.75 GB VM; there was no OOM.
+- The one-slot baseline expanded more often than the same points of E2 (79 % against 33 % at 2
+  clients): in E2 every WebSocket window followed 20 s of REST load on the same CPU, here it did
+  not. That is why E3 measures its own baseline instead of reusing E2's numbers.
