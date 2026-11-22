@@ -1,0 +1,75 @@
+@startuml sequence_search_expansion_fallback
+title Search with expansion: Ollama unavailable or too slow (fallback)
+
+actor Client
+participant SearchSocket
+participant ThreadPool
+participant QueryExpansionService
+participant QueryExpansionCache
+participant OllamaClient
+participant "ollama\n(container)" as Ollama
+participant ExpandedQuery
+participant KeywordSearch
+participant Bm25Scorer
+
+Client -> SearchSocket : {"query": "jazz piano"}
+activate SearchSocket
+note right of SearchSocket: busy flag, parseQuery, requireCurrent\nand the in-flight limit as on the happy path
+SearchSocket -> ThreadPool : submit(() -> run(ctx, session, query, built))
+deactivate SearchSocket
+
+ThreadPool -> SearchSocket : run(ctx, session, query, built)
+activate SearchSocket
+SearchSocket -> QueryExpansionService : expand(query)
+activate QueryExpansionService
+QueryExpansionService -> QueryExpansionCache : get(key)
+QueryExpansionCache --> QueryExpansionService : null (not cached)
+QueryExpansionService -> OllamaClient : generate(prompt(query))
+activate OllamaClient
+
+alt Ollama answers too late
+  OllamaClient -> Ollama : POST /api/generate (timeout 5 s)
+  Ollama -[#gray]-> OllamaClient : (no answer within 5 s)
+  OllamaClient --> QueryExpansionService : throws HttpTimeoutException
+else Ollama unreachable
+  OllamaClient -[#red]>x Ollama : POST /api/generate
+  OllamaClient --> QueryExpansionService : throws ConnectException
+else Ollama answers with an error
+  OllamaClient -> Ollama : POST /api/generate
+  Ollama --> OllamaClient : HTTP 500 or a body without "response"
+  OllamaClient --> QueryExpansionService : throws IOException
+end
+deactivate OllamaClient
+
+QueryExpansionService -> QueryExpansionService : catch (IOException | RuntimeException e)\nLOG.warn("Query expansion failed ...")
+note right of QueryExpansionService
+  The failure is not cached:
+  the next request for this query
+  asks Ollama again.
+end note
+QueryExpansionService --> SearchSocket : List.of()  (no terms)
+deactivate QueryExpansionService
+
+SearchSocket -> ExpandedQuery : of(query, [])
+ExpandedQuery --> SearchSocket : terms jazz 1.0, piano 1.0 only;\nnewTerms() = []
+SearchSocket -> Client : {"stage": "query_expansion", "data":\n{"original": "jazz piano", "expanded_terms": []}}
+
+SearchSocket -> KeywordSearch : search(expandedQuery)
+activate KeywordSearch
+KeywordSearch -> Bm25Scorer : score(query.terms(), query.weights())
+note right: only the original terms:\nthe same ranking as POST /api/search
+Bm25Scorer --> KeywordSearch : double[] scores
+KeywordSearch --> SearchSocket : top 10 results with snippets
+deactivate KeywordSearch
+
+SearchSocket -> Client : {"stage": "keyword_search", "data":\n{"results": [...], "time_ms": ...}}
+SearchSocket -> SearchSocket : finish(...): session.busy.set(false)
+SearchSocket -> Client : {"stage": "done"}
+deactivate SearchSocket
+
+note over Client, Bm25Scorer
+  No error reaches the client: an unavailable Ollama only removes the expansion.
+  SearchSocket also catches a RuntimeException from expand() and uses [] (defensive; expand() does not throw).
+end note
+
+@enduml

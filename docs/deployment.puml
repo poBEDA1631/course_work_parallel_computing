@@ -1,0 +1,44 @@
+@startuml deployment
+title Deployment: docker compose
+
+actor "User\n(browser or ./search CLI)" as client
+
+node "Docker (compose project)" as docker {
+  frame "network search-net" as net {
+    node "search\n(Dockerfile: eclipse-temurin:21-jre-alpine)" as search {
+      artifact "search.jar\nJavalin: REST, /ws/search, Web UI" as jar
+    }
+    node "ollama\n(ollama/ollama:0.40.16)" as ollama {
+      artifact "llama3.2:3b\nOLLAMA_KEEP_ALIVE=-1" as model
+    }
+    node "ollama-init\n(one-shot, ollama/ollama:0.40.16)" as ollamaInit
+    node "dataset-init\n(one-shot, dataset-init/Dockerfile:\npython:3.12-alpine)" as datasetInit
+  }
+  database "volume ollama-models\n/root/.ollama" as modelsVol
+  database "volume dataset\n/data" as datasetVol
+}
+
+cloud "Amazon Reviews 2023\n(mcauleylab.ucsd.edu)" as source
+
+client --> search : HTTP / WebSocket\nhost port 8080 (PORT)
+
+search --> ollama : POST /api/generate, GET /api/tags\nhttp://ollama:11434
+ollamaInit --> ollama : ollama pull llama3.2:3b,\nwarm-up run of the expansion prompt
+ollama --> modelsVol : model files
+datasetInit --> datasetVol : one .txt per product, .complete
+search --> datasetVol : read-only (DATASET_DIR=/data)
+datasetInit --> source : HTTPS, streamed jsonl.gz\n(Range resume)
+
+ollamaInit ..> ollama : depends_on:\nservice_healthy\n(healthcheck: ollama list)
+search ..> datasetInit : depends_on:\nservice_completed_successfully
+
+note right of search
+  healthcheck: GET /api/health
+  restart: unless-stopped
+  mem_limit: 4.5g
+  Does not wait for ollama-init:
+  /api/health reports "ollama": false
+  until the model is available.
+end note
+
+@enduml

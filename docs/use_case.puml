@@ -1,0 +1,42 @@
+@startuml use_case
+title Parallel Search: use cases
+
+left to right direction
+skinparam packageStyle rectangle
+
+actor User
+note bottom of User
+  One user, reaching the service
+  through the Web UI, the ./search CLI
+  or the HTTP/WebSocket API directly.
+end note
+
+rectangle "search service" {
+  usecase "Build / rebuild index\n(POST /api/index)" as Build
+  usecase "Search without expansion\n(POST /api/search, BM25)" as SearchRest
+  usecase "Search with expansion\n(WebSocket /ws/search)" as SearchWs
+  usecase "Check health and stats\n(GET /api/health, GET /api/stats)" as Status
+}
+
+rectangle "ollama service" as Ollama
+
+User --> Build
+User --> SearchRest
+User --> SearchWs
+User --> Status
+
+SearchWs ..> Ollama : expands the query\n(falls back to the original\nquery if unavailable)
+Status ..> Ollama : model available?
+
+note right of SearchRest
+  Needs a built index:
+  409 while no index exists
+  or a build is running.
+end note
+note right of SearchWs
+  Same index requirement;
+  stages: query_expansion,
+  keyword_search, done.
+end note
+
+@enduml

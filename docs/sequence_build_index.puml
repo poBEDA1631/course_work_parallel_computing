@@ -1,0 +1,75 @@
+@startuml sequence_build_index
+title Build index: POST /api/index
+
+actor Client
+participant "ApiServer\n(POST /api/index)" as Api
+participant IndexService
+participant DocumentLoader
+participant IndexBuilder
+participant ThreadPool
+participant "pool worker\n(x threads)" as Worker
+participant LocalAccumulator
+participant InvertedIndex
+participant IndexShard
+
+Client -> Api : POST /api/index {"threads": N}
+Api -> Api : parseThreads(mapper, ctx)
+Api -> IndexService : rebuild(threads)
+activate IndexService
+IndexService -> IndexService : building.compareAndSet(false, true)
+note right: false -> ApiException(409,\n"index build already in progress")
+IndexService -> IndexService : current.set(null)
+note right: the old index is released first:\ntwo indexes do not fit in memory
+IndexService -> DocumentLoader : listDocuments(datasetDir)
+DocumentLoader --> IndexService : files (sorted by name)
+IndexService -> ThreadPool ** : new ThreadPool(threads)
+IndexService -> InvertedIndex ** : new InvertedIndex(IndexBuilder.shardCountFor(threads))
+IndexService -> IndexBuilder ** : new IndexBuilder(pool, index)
+IndexService -> IndexBuilder : build(files)
+activate IndexBuilder
+IndexBuilder -> DocumentLoader : batches(files)
+DocumentLoader --> IndexBuilder : batches of 64 files
+
+loop for every batch
+  IndexBuilder -> ThreadPool : submit(() -> indexBatch(batch, firstDocId, docLengths))
+  note right: queue.put(task) blocks\nwhile the bounded queue is full
+  ThreadPool --> IndexBuilder : TaskHandle
+end
+
+par each batch on some worker (queue.take(), task.run())
+  Worker -> IndexBuilder : indexBatch(batch, firstDocId, docLengths)
+  activate IndexBuilder
+  IndexBuilder -> LocalAccumulator ** : new LocalAccumulator()
+  loop for every file of the batch
+    IndexBuilder -> IndexBuilder : Files.readAllBytes(file)
+    note right: IOException: skipped and counted
+    IndexBuilder -> LocalAccumulator : add(Stemmer.stem(token), docId)\nfor each Tokenizer.forEachToken(...)
+    IndexBuilder -> IndexBuilder : docLengths[docId] = token count
+  end
+  IndexBuilder -> InvertedIndex : mergeFrom(local)
+  activate InvertedIndex
+  loop shards in ascending order, one lock at a time
+    InvertedIndex -> IndexShard : mergeBatch(keys, hashes, postings, order, from, to)
+    note right: under this shard's write lock
+  end
+  deactivate InvertedIndex
+  deactivate IndexBuilder
+end
+
+loop for every TaskHandle
+  IndexBuilder -> ThreadPool : handle.get()
+  ThreadPool --> IndexBuilder : skipped files of the batch
+end
+IndexBuilder --> IndexService : BuildResult(documentsIndexed, documentsSkipped,\ntimeMs, docLengths, averageDocLength)
+deactivate IndexBuilder
+
+IndexService -> DocumentLoader : documentId(file) for every file
+IndexService -> IndexService : current.set(new BuiltIndex(index, result, threads, docIds))
+IndexService -> ThreadPool : shutdown()
+IndexService -> ThreadPool : awaitTermination(...)
+IndexService -> IndexService : building.set(false)
+IndexService --> Api : BuiltIndex
+deactivate IndexService
+Api --> Client : 200 {"status": "ok",\n"documents_indexed": ..., "time_ms": ...}
+
+@enduml

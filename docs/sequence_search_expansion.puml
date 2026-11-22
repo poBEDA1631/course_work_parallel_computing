@@ -1,0 +1,80 @@
+@startuml sequence_search_expansion
+title Search with expansion: /ws/search, Ollama answers in time
+
+actor Client
+participant SearchSocket
+participant IndexService
+participant ThreadPool
+participant QueryExpansionService
+participant QueryExpansionCache
+participant OllamaClient
+participant "ollama\n(container)" as Ollama
+participant ExpandedQuery
+participant KeywordSearch
+participant Bm25Scorer
+participant InvertedIndex
+participant TopKSelector
+participant SnippetBuilder
+
+Client -> SearchSocket : {"query": "jazz piano"}
+activate SearchSocket
+SearchSocket -> SearchSocket : onMessage(ctx, message)\nsession.busy.compareAndSet(false, true)
+note right: false -> {"stage": "error",\n"message": "request already in progress"}
+SearchSocket -> SearchSocket : parseQuery(message)
+SearchSocket -> IndexService : requireCurrent()
+IndexService --> SearchSocket : BuiltIndex
+note right: none -> {"stage": "error", "message":\n"index has not been built yet" |\n"index build in progress"}
+SearchSocket -> SearchSocket : inFlight.incrementAndGet() <= 24
+SearchSocket -> ThreadPool : submit(() -> run(ctx, session, query, built))
+deactivate SearchSocket
+note over SearchSocket: the WebSocket thread is free again\nand can reject further messages
+
+ThreadPool -> SearchSocket : run(ctx, session, query, built)
+activate SearchSocket
+SearchSocket -> QueryExpansionService : expand(query)
+activate QueryExpansionService
+QueryExpansionService -> QueryExpansionCache : get(key)
+QueryExpansionCache --> QueryExpansionService : null (not cached)
+QueryExpansionService -> OllamaClient : generate(prompt(query))
+activate OllamaClient
+OllamaClient -> Ollama : POST /api/generate\n{model, prompt, stream: false,\noptions: {temperature: 0}}\n(timeout 5 s)
+Ollama --> OllamaClient : 200 {"response": "jazz, piano, swing, improvisation"}
+OllamaClient --> QueryExpansionService : answer text
+deactivate OllamaClient
+QueryExpansionService -> QueryExpansionService : parse(answer)
+QueryExpansionService -> QueryExpansionCache : put(key, terms)
+QueryExpansionService --> SearchSocket : [jazz, piano, swing, improvisation]
+deactivate QueryExpansionService
+
+SearchSocket -> ExpandedQuery : of(query, expanded)
+ExpandedQuery --> SearchSocket : terms jazz 1.0, piano 1.0,\nswing 0.5, improvisation 0.5;\nnewTerms() = [swing, improvisation]
+SearchSocket -> Client : {"stage": "query_expansion", "data":\n{"original": "jazz piano",\n"expanded_terms": ["swing", "improvisation"]}}
+
+SearchSocket -> KeywordSearch ** : new KeywordSearch(index, docIds, docLengths,\naverageDocLength, documentsIndexed, datasetDir)
+SearchSocket -> KeywordSearch : search(expandedQuery)
+activate KeywordSearch
+KeywordSearch -> Bm25Scorer : score(query.terms(), query.weights())
+activate Bm25Scorer
+loop for every distinct term
+  Bm25Scorer -> InvertedIndex : search(term)
+  InvertedIndex --> Bm25Scorer : Postings snapshot (read lock)
+  Bm25Scorer -> Bm25Scorer : scores[doc] += weight * idf * tf part
+end
+Bm25Scorer --> KeywordSearch : double[] scores
+deactivate Bm25Scorer
+KeywordSearch -> TopKSelector : offer(doc, score) for every score > 0
+KeywordSearch -> TopKSelector : sortedDescending()
+TopKSelector --> KeywordSearch : top 10 hits
+KeywordSearch -> KeywordSearch : normalize(hits)\n(min-max over the returned hits)
+loop for every hit
+  KeywordSearch -> SnippetBuilder : build(text of doc_id.txt, query.words())
+end
+KeywordSearch --> SearchSocket : results (doc_id, score, snippet)
+deactivate KeywordSearch
+
+SearchSocket -> Client : {"stage": "keyword_search", "data":\n{"results": [...], "time_ms": ...}}
+SearchSocket -> SearchSocket : finish(...): session.busy.set(false)
+SearchSocket -> Client : {"stage": "done"}
+deactivate SearchSocket
+
+@enduml
