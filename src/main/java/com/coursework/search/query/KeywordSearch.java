@@ -1,8 +1,6 @@
 package com.coursework.search.query;
 
 import com.coursework.search.index.InvertedIndex;
-import com.coursework.search.text.Stemmer;
-import com.coursework.search.text.Tokenizer;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -43,14 +41,15 @@ public final class KeywordSearch {
 
   /** Returns at most {@link #K} results, best first; empty if no query term is indexed. */
   public List<Result> search(String query) {
-    List<String> words = new ArrayList<>();
-    Tokenizer.forEachToken(query, words::add);
-    String[] terms = new String[words.size()];
-    for (int i = 0; i < terms.length; i++) {
-      terms[i] = Stemmer.stem(words.get(i));
-    }
+    return search(ExpandedQuery.of(query));
+  }
 
-    double[] scores = scorer.score(terms);
+  /**
+   * Like {@link #search(String)}, with expansion terms ranked at their lower weight. Snippets are
+   * still centred on the user's own words.
+   */
+  public List<Result> search(ExpandedQuery query) {
+    double[] scores = scorer.score(query.terms(), query.weights());
     TopKSelector top = new TopKSelector(K);
     for (int doc = 0; doc < scores.length; doc++) {
       // Every matching term contributes a positive amount, so 0 means "no match".
@@ -61,7 +60,7 @@ public final class KeywordSearch {
     TopKSelector.Hit[] hits = top.sortedDescending();
 
     double[] normalized = normalize(hits);
-    String[] queryWords = words.toArray(new String[0]);
+    String[] queryWords = query.words();
     List<Result> results = new ArrayList<>(hits.length);
     for (int i = 0; i < hits.length; i++) {
       String docId = docIds[hits[i].docId()];
