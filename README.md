@@ -125,6 +125,40 @@ Response `200`:
 
 Errors: `409` if no index has been built yet.
 
+### `POST /api/search`
+
+BM25 keyword search over the current index; during a rebuild the previous index answers.
+
+Request:
+
+| Field | Type | Description |
+|---|---|---|
+| `query` | string | free text, tokenized and stemmed like the documents |
+| `mode` | string | must be `"keyword"` |
+
+Response `200`:
+
+| Field | Type | Description |
+|---|---|---|
+| `results` | array | at most 10 results, best first; empty if no query term is indexed |
+| `results[].doc_id` | string | document id (`parent_asin`) |
+| `results[].score` | number | BM25 score min-max normalized over the returned results: best `1.0`, worst `0.0`, all `1.0` if equal |
+| `results[].snippet` | string | about 200 characters around the first literal occurrence of a query word, or the start of the document |
+| `time_ms` | integer | search time in milliseconds |
+
+```json
+{
+  "results": [
+    {"doc_id": "B01CH6SA74", "score": 1.0, "snippet": "IMAX: Journey to Space Brilliantly narrated by ..."},
+    {"doc_id": "B074QWGFSK", "score": 0.573, "snippet": "A Year in Space and Beyond a Year in Space ..."}
+  ],
+  "time_ms": 3
+}
+```
+
+Errors: `400` for a malformed body, a non-string `query` or a `mode` other than `"keyword"`;
+`409` if no index has been built yet.
+
 ### Errors
 
 Every error has status `400`, `409` or `500` and the body:
@@ -147,3 +181,12 @@ Every error has status `400`, `409` or `500` and the body:
 - Files are split into batches of 64; each batch is one thread pool task that reads its files,
   accumulates term frequencies locally and merges them into the shared index once.
 - The index has the smallest power-of-two number of shards that is at least `4 x threads`.
+
+## Ranking
+
+- BM25 with `k1 = 1.2`, `b = 0.75` and `idf = ln((N - df + 0.5) / (df + 0.5) + 1)`, where `N` is
+  the number of indexed documents. Repeated query terms count once.
+- Scores are accumulated in a dense array indexed by document; a bounded min-heap keeps the
+  top 10, ties broken by the lower document position.
+- Snippets are cut from the document file only for the returned results: a window of 100
+  characters on each side of the match, trimmed to whole words, whitespace collapsed.
