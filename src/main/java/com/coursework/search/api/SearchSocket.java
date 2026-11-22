@@ -79,9 +79,11 @@ final class SearchSocket {
       finish(ctx, session, new ErrorStage("error", "message must be {\"query\": string}"));
       return;
     }
-    IndexService.BuiltIndex built = indexService.current().orElse(null);
-    if (built == null) {
-      finish(ctx, session, new ErrorStage("error", "index has not been built yet"));
+    IndexService.BuiltIndex built;
+    try {
+      built = indexService.requireCurrent();
+    } catch (ApiException e) {
+      finish(ctx, session, new ErrorStage("error", e.getMessage()));
       return;
     }
     if (inFlight.incrementAndGet() > maxInFlight) {

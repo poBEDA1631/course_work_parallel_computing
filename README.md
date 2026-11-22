@@ -124,7 +124,9 @@ not been pulled yet; only `ollama` changes.
 ### `POST /api/index`
 
 Builds a new index over every `.txt` file in `DATASET_DIR` and responds when the build is
-finished. The previous index, if any, stays in use until the new one is complete.
+finished. The previous index, if any, is released when the build starts: two complete indexes
+(about 1.9 GB of heap each for the full corpus) do not fit in memory next to the loaded Ollama
+model. While the build runs, and after a failed build, there is no index.
 
 Request:
 
@@ -149,7 +151,7 @@ running, `500` if the dataset cannot be read.
 
 ### `GET /api/stats`
 
-Statistics of the last successful build; during a rebuild it still reports the previous one.
+Statistics of the current index.
 
 Response `200`:
 
@@ -163,11 +165,12 @@ Response `200`:
 {"documents": 611120, "index_build_time_ms": 74611, "threads_used": 8}
 ```
 
-Errors: `409` if no index has been built yet.
+Errors: `409` with `"index build in progress"` while a build runs, or `"index has not been built
+yet"` if there is no index.
 
 ### `POST /api/search`
 
-BM25 keyword search over the current index; during a rebuild the previous index answers.
+BM25 keyword search over the current index.
 
 Request:
 
@@ -197,7 +200,7 @@ Response `200`:
 ```
 
 Errors: `400` for a malformed body, a non-string `query` or a `mode` other than `"keyword"`;
-`409` if no index has been built yet.
+`409` with `"index build in progress"` while a build runs, or `"index has not been built yet"`.
 
 ### WebSocket `/ws/search`
 
@@ -247,10 +250,9 @@ Errors are sent as `{"stage": "error", "message": string}` and leave the connect
 | `request already in progress` | a message arrives before the current request's `done`/`error`; the message is ignored and the current request continues |
 | `message must be {"query": string}` | the message is not JSON or `query` is not a string |
 | `index has not been built yet` | no index exists (Ollama is not called) |
+| `index build in progress` | a build is running, so there is no index (Ollama is not called) |
 | `server busy, try again later` | 24 requests (8 running, 16 queued) are already in flight across all connections |
 | `keyword search failed` | the search itself failed (not expected in normal operation) |
-
-During a rebuild the previous index answers, as for `POST /api/search`.
 
 ### Errors
 

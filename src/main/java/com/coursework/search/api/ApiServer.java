@@ -65,10 +65,7 @@ public final class ApiServer {
     app.get(
         "/api/stats",
         ctx -> {
-          IndexService.BuiltIndex built =
-              indexService
-                  .current()
-                  .orElseThrow(() -> new ApiException(409, "index has not been built yet"));
+          IndexService.BuiltIndex built = indexService.requireCurrent();
           ctx.json(
               new StatsResponse(
                   built.result().documentsIndexed(), built.result().timeMs(), built.threads()));
@@ -78,11 +75,7 @@ public final class ApiServer {
         "/api/search",
         ctx -> {
           String query = parseSearchQuery(mapper, ctx);
-          // During a rebuild this is still the previous, complete index.
-          IndexService.BuiltIndex built =
-              indexService
-                  .current()
-                  .orElseThrow(() -> new ApiException(409, "index has not been built yet"));
+          IndexService.BuiltIndex built = indexService.requireCurrent();
           long start = System.nanoTime();
           List<KeywordSearch.Result> results =
               new KeywordSearch(
