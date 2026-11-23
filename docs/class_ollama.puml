@@ -1,0 +1,89 @@
+@startuml class_ollama
+title Package com.coursework.search.ollama
+
+skinparam classAttributeIconSize 0
+hide empty members
+
+package com.coursework.search.ollama {
+
+  class QueryExpansionService <<final>> {
+    + {static} MAX_TERMS : int = 8
+    ~ {static} MAX_TERM_WORDS : int = 3
+    ~ {static} MAX_TERM_LENGTH : int = 40
+    - client : OllamaClient
+    - cache : QueryExpansionCache
+    + QueryExpansionService(client : OllamaClient, cache : QueryExpansionCache)
+    + expand(query : String) : List<String>
+    ~ {static} prompt(query : String) : String
+    ~ {static} parse(answer : String) : List<String>
+  }
+
+  class QueryExpansionCache <<final>> {
+    + {static} DEFAULT_CAPACITY : int = 256
+    - capacity : int
+    - nodes : Map<String, Node>
+    - head : Node
+    - tail : Node
+    + QueryExpansionCache()
+    + QueryExpansionCache(capacity : int)
+    + get(key : String) : List<String>
+    + put(key : String, value : List<String>) : void
+    + size() : int
+    ~ keysByRecency() : String[]
+    - moveToFront(node : Node) : void
+    - linkFirst(node : Node) : void
+    - unlink(node : Node) : void
+  }
+
+  class "QueryExpansionCache.Node" as Node <<private>> {
+    ~ key : String
+    ~ value : List<String>
+    ~ prev : Node
+    ~ next : Node
+  }
+
+  class OllamaClient <<final>> {
+    + {static} GENERATE_TIMEOUT : Duration = 5 s
+    + {static} HEALTH_TIMEOUT : Duration = 1 s
+    - baseUrl : URI
+    - model : String
+    - generateTimeout : Duration
+    - healthTimeout : Duration
+    - http : HttpClient
+    + OllamaClient(baseUrl : String, model : String)
+    ~ OllamaClient(baseUrl : String, model : String, generateTimeout : Duration, healthTimeout : Duration)
+    + model() : String
+    + generate(prompt : String) : String
+    + isAvailable() : boolean
+  }
+}
+
+QueryExpansionService --> "1" OllamaClient : client
+QueryExpansionService --> "1" QueryExpansionCache : cache
+QueryExpansionCache *-- "0..capacity" Node : nodes + list
+
+note right of QueryExpansionService
+  expand(): key = trimmed, lower-cased query;
+  cache hit -> cached terms; otherwise generate(prompt(query)),
+  parse() (comma split, trim, lower-case, drop terms over
+  3 words or 40 chars, dedupe, at most 8) and put() into the cache.
+  IOException or RuntimeException from generate():
+  logged, returns an empty list, nothing cached.
+end note
+
+note right of QueryExpansionCache
+  LRU, synchronized: HashMap for lookup plus a doubly
+  linked list, head (most recent) ... tail (least recent).
+  get() and put() move the node to the front;
+  put() over capacity evicts the tail.
+end note
+
+note bottom of OllamaClient
+  generate(): POST {url}/api/generate, stream false,
+  temperature 0; throws IOException on timeout,
+  connection failure, non-200 or a body without "response".
+  isAvailable(): GET {url}/api/tags lists the model;
+  any failure means false.
+end note
+
+@enduml

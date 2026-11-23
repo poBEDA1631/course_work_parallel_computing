@@ -1,0 +1,88 @@
+@startuml class_concurrent
+title Package com.coursework.search.concurrent
+
+skinparam classAttributeIconSize 0
+hide empty members
+
+package com.coursework.search.concurrent {
+
+  class ThreadPool <<final>> {
+    - queue : BoundedTaskQueue
+    - workers : Thread[]
+    + ThreadPool(workerCount : int)
+    + submit<T>(callable : Callable<T>) : TaskHandle<T>
+    + submit(runnable : Runnable) : TaskHandle<Void>
+    + shutdown() : void
+    + awaitTermination(timeout : long, unit : TimeUnit) : boolean
+    + workerCount() : int
+    + queueCapacity() : int
+    - workLoop() : void
+  }
+
+  class BoundedTaskQueue <<final>> {
+    - buffer : Task<?>[]
+    - lock : ReentrantLock
+    - notEmpty : Condition
+    - notFull : Condition
+    - head : int
+    - tail : int
+    - count : int
+    - closed : boolean
+    ~ BoundedTaskQueue(capacity : int)
+    ~ put(task : Task<?>) : void
+    ~ take() : Task<?>
+    ~ close() : void
+    ~ capacity() : int
+  }
+
+  interface TaskHandle<T> {
+    + get() : T
+    + isDone() : boolean
+  }
+
+  class Task<T> <<final>> {
+    - {static} PENDING : int = 0
+    - {static} SUCCEEDED : int = 1
+    - {static} FAILED : int = 2
+    - callable : Callable<T>
+    - lock : ReentrantLock
+    - completed : Condition
+    - state : int
+    - result : T
+    - error : Throwable
+    ~ Task(callable : Callable<T>)
+    ~ run() : void
+    + get() : T
+    + isDone() : boolean
+  }
+}
+
+ThreadPool *-- "1" BoundedTaskQueue : queue
+ThreadPool ..> Task : creates in submit()
+ThreadPool ..> TaskHandle : returns
+BoundedTaskQueue o-- "0..capacity" Task : ring buffer
+Task ..|> TaskHandle
+
+note right of ThreadPool
+  Fixed array of worker threads ("pool-worker-i"),
+  each running workLoop(): take(), task.run(),
+  then clear the interrupt flag.
+  Queue capacity = 2 * workerCount.
+end note
+
+note bottom of BoundedTaskQueue
+  One ReentrantLock, two Conditions:
+  put() waits on notFull, take() on notEmpty.
+  close() (from shutdown()) wakes both sides;
+  put() then throws IllegalStateException,
+  take() returns null once the queue is drained.
+end note
+
+note bottom of Task
+  run() never throws: any Throwable is stored
+  and get() rethrows it as ExecutionException,
+  so a failing task cannot kill its worker.
+  get() waits on the task's own Condition.
+end note
+
+@enduml

@@ -1,0 +1,128 @@
+@startuml class_api
+title Package com.coursework.search.api
+
+skinparam classAttributeIconSize 0
+hide empty members
+
+package com.coursework.search.api {
+
+  class ApiServer <<final>> {
+    + {static} MAX_THREADS : int = 256
+    + {static} create(indexService : IndexService, ollama : OllamaClient, expansion : QueryExpansionService) : Javalin
+    - {static} parseThreads(mapper : ObjectMapper, ctx : Context) : int
+    - {static} parseSearchQuery(mapper : ObjectMapper, ctx : Context) : String
+    - {static} readBody(mapper : ObjectMapper, ctx : Context) : JsonNode
+  }
+
+  class IndexService <<final>> {
+    - datasetDir : Path
+    - building : AtomicBoolean
+    - current : AtomicReference<BuiltIndex>
+    - afterRelease : Runnable
+    + IndexService(datasetDir : Path)
+    ~ IndexService(datasetDir : Path, afterRelease : Runnable)
+    + rebuild(threads : int) : BuiltIndex
+    + datasetDir() : Path
+    + current() : Optional<BuiltIndex>
+    + requireCurrent() : BuiltIndex
+  }
+
+  class "IndexService.BuiltIndex" as BuiltIndex <<record>> {
+    + index : InvertedIndex
+    + result : BuildResult
+    + threads : int
+    + docIds : String[]
+  }
+
+  class SearchSocket <<final>> {
+    ~ {static} WORKERS : int = 8
+    - indexService : IndexService
+    - expansion : QueryExpansionService
+    - mapper : ObjectMapper
+    - pool : ThreadPool
+    - inFlight : AtomicInteger
+    - maxInFlight : int
+    ~ SearchSocket(indexService : IndexService, expansion : QueryExpansionService, mapper : ObjectMapper)
+    ~ configure(ws : WsConfig) : void
+    ~ shutdown() : void
+    - onMessage(ctx : WsContext, message : String) : void
+    - run(ctx : WsContext, session : Session, query : String, built : BuiltIndex) : void
+    - finish(ctx : WsContext, session : Session, last : Object) : void
+    - send(ctx : WsContext, session : Session, message : Object) : void
+    - parseQuery(message : String) : String
+  }
+
+  class "SearchSocket.Session" as Session <<private>> {
+    ~ busy : AtomicBoolean
+    ~ sendLock : Object
+  }
+
+  class ApiException <<final>> {
+    - status : int
+    + ApiException(status : int, message : String)
+    + status() : int
+  }
+}
+
+package com.coursework.search.concurrent {
+  class ThreadPool
+}
+package com.coursework.search.index {
+  class InvertedIndex
+}
+package com.coursework.search.indexing {
+  class IndexBuilder
+  class DocumentLoader
+  class BuildResult
+}
+package com.coursework.search.query {
+  class KeywordSearch
+  class ExpandedQuery
+}
+package com.coursework.search.ollama {
+  class OllamaClient
+  class QueryExpansionService
+}
+note as Refs
+  members: see class_concurrent, class_index,
+  class_indexing, class_query and class_ollama.puml
+end note
+
+ApiServer ..> IndexService : /api/index, /api/stats, /api/search
+ApiServer ..> SearchSocket : creates, /ws/search
+ApiServer ..> OllamaClient : /api/health: isAvailable()
+ApiServer ..> KeywordSearch : POST /api/search
+ApiServer ..> ApiException : 400 / 409 / 500
+IndexService *-- "0..1" BuiltIndex : current
+IndexService ..> IndexBuilder : rebuild()
+IndexService ..> DocumentLoader : listDocuments()
+IndexService ..> ThreadPool : one pool per build
+IndexService ..> ApiException : 409
+BuiltIndex --> InvertedIndex
+BuiltIndex --> BuildResult
+SearchSocket --> "1" IndexService : requireCurrent()
+SearchSocket --> "1" QueryExpansionService : expand()
+SearchSocket *-- "1" ThreadPool : pool (8 workers)
+SearchSocket ..> ExpandedQuery : of(query, expanded)
+SearchSocket ..> KeywordSearch : search(expandedQuery)
+SearchSocket *-- "per connection" Session
+
+note right of IndexService
+  rebuild(): building.compareAndSet(false, true)
+  (else 409); current.set(null) releases the old index;
+  builds with its own ThreadPool; publishes the new
+  BuiltIndex, then shuts the pool down.
+  requireCurrent(): 409 "index build in progress"
+  or "index has not been built yet".
+end note
+
+note right of SearchSocket
+  One request per connection (Session.busy); the request
+  runs on the pool so the WebSocket thread can reject
+  further messages. inFlight is capped at workers + queue
+  (24), so submit() never blocks ("server busy" beyond).
+  Sends under Session.sendLock; the busy flag is cleared
+  before the final done/error message.
+end note
+
+@enduml

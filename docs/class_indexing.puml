@@ -1,0 +1,76 @@
+@startuml class_indexing
+title Package com.coursework.search.indexing
+
+skinparam classAttributeIconSize 0
+hide empty members
+
+package com.coursework.search.indexing {
+
+  class DocumentLoader <<final>> {
+    + {static} BATCH_SIZE : int = 64
+    + {static} listDocuments(datasetDir : Path) : List<Path>
+    + {static} batches(files : List<Path>) : List<List<Path>>
+    + {static} documentId(file : Path) : String
+  }
+
+  class IndexBuilder <<final>> {
+    - pool : ThreadPool
+    - index : InvertedIndex
+    + IndexBuilder(pool : ThreadPool, index : InvertedIndex)
+    + {static} shardCountFor(threads : int) : int
+    + build(files : List<Path>) : BuildResult
+    - indexBatch(batch : List<Path>, firstDocId : int, docLengths : int[]) : int
+  }
+
+  class BuildResult <<record>> {
+    + documentsIndexed : int
+    + documentsSkipped : int
+    + timeMs : long
+    + docLengths : int[]
+    + averageDocLength : double
+  }
+}
+
+package com.coursework.search.concurrent {
+  class ThreadPool
+  interface TaskHandle
+}
+note top of ThreadPool : members: see class_concurrent.puml
+
+package com.coursework.search.index {
+  class InvertedIndex
+  class LocalAccumulator
+}
+note top of InvertedIndex : members: see class_index.puml
+
+package com.coursework.search.text {
+  class Tokenizer
+  class Stemmer
+}
+
+IndexBuilder --> "1" ThreadPool : pool
+IndexBuilder --> "1" InvertedIndex : index
+IndexBuilder ..> DocumentLoader : batches(files)
+IndexBuilder ..> BuildResult : creates
+IndexBuilder ..> TaskHandle : get() per batch
+IndexBuilder ..> LocalAccumulator : one per batch
+IndexBuilder ..> Tokenizer : forEachToken()
+IndexBuilder ..> Stemmer : stem()
+
+note right of IndexBuilder
+  build() submits one task per batch of 64 files.
+  Each task reads its files, tokenizes and stems them
+  into its own LocalAccumulator, records the token
+  count in docLengths[docId] (its own index range),
+  then calls InvertedIndex.mergeFrom() exactly once.
+  An unreadable file is skipped and counted.
+  shardCountFor(threads): smallest power of two >= 4 * threads.
+end note
+
+note bottom of DocumentLoader
+  One .txt per document, sorted by file name;
+  doc id = position in that list,
+  documentId() = file name without ".txt".
+end note
+
+@enduml

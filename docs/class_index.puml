@@ -1,0 +1,117 @@
+@startuml class_index
+title Package com.coursework.search.index
+
+skinparam classAttributeIconSize 0
+hide empty members
+
+package com.coursework.search.index {
+
+  class InvertedIndex <<final>> {
+    - shards : IndexShard[]
+    - mask : int
+    + InvertedIndex(shardCount : int)
+    + shardCount() : int
+    + shardFor(term : String) : int
+    + mergeFrom(local : LocalAccumulator) : void
+    + search(term : String) : Postings
+    + termCount() : int
+  }
+
+  class IndexShard <<final>> {
+    ~ {static} INITIAL_CAPACITY : int = 16
+    - lock : ReentrantReadWriteLock
+    - hashShift : int
+    - keys : String[]
+    - values : Postings[]
+    - size : int
+    ~ IndexShard(hashShift : int)
+    ~ incrementOrCreate(term : String, docId : int, tf : int) : void
+    ~ mergeBatch(terms : String[], hashes : int[], postings : Postings[], order : int[], from : int, to : int) : void
+    ~ lookup(term : String) : Postings
+    ~ lookup(term : String, hash : int) : Postings
+    ~ size() : int
+    ~ capacity() : int
+    - findOrInsert(term : String, hash : int) : int
+    - probe(table : String[], term : String, hash : int) : int
+    - rehash(newCapacity : int) : void
+  }
+
+  class LocalAccumulator <<final>> {
+    ~ {static} INITIAL_CAPACITY : int = 1024
+    - keys : String[]
+    - hashes : int[]
+    - postings : Postings[]
+    - size : int
+    + add(term : String, docId : int) : void
+    + size() : int
+    ~ get(term : String) : Postings
+    ~ keys() : String[]
+    ~ hashes() : int[]
+    ~ postings() : Postings[]
+    - {static} probe(table : String[], tableHashes : int[], term : String, hash : int) : int
+    - rehash(newCapacity : int) : void
+  }
+
+  class Postings <<final>> {
+    ~ {static} INITIAL_CAPACITY : int = 4
+    - docIds : int[]
+    - termFrequencies : int[]
+    - size : int
+    ~ Postings()
+    + size() : int
+    + docId(i : int) : int
+    + termFrequency(i : int) : int
+    ~ append(docId : int, tf : int) : void
+    ~ appendAll(other : Postings) : void
+    ~ addOccurrence(docId : int) : void
+    ~ copy() : Postings
+    ~ capacity() : int
+    - ensureCapacity(required : int) : void
+    - checkIndex(i : int) : void
+  }
+
+  class Fnv1a <<final>> {
+    - {static} OFFSET_BASIS : int = 0x811C9DC5
+    - {static} PRIME : int = 0x01000193
+    + {static} hash32(s : String) : int
+  }
+}
+
+InvertedIndex *-- "shardCount" IndexShard : shards
+IndexShard *-- "0..*" Postings : values
+LocalAccumulator *-- "0..*" Postings : postings
+InvertedIndex ..> LocalAccumulator : mergeFrom()
+InvertedIndex ..> Fnv1a
+IndexShard ..> Fnv1a
+LocalAccumulator ..> Fnv1a
+
+note right of InvertedIndex
+  shardCount is a power of two;
+  a term lives in shard fnv1a(term) & (shardCount - 1).
+  mergeFrom() buckets the local terms by shard
+  (counting sort), then visits shards in ascending
+  order and calls mergeBatch() on each: at most one
+  shard lock is held at a time.
+  search() returns a snapshot (Postings.copy()).
+end note
+
+note right of IndexShard
+  Open addressing with linear probing; the slot uses
+  the hash bits above the shard bits (hashShift).
+  Grows by doubling when the load factor would exceed 0.7.
+  mergeBatch() and incrementOrCreate() take the
+  write lock, lookup() the read lock.
+end note
+
+note bottom of LocalAccumulator
+  Per worker, never shared: no locks.
+  Same open addressing; add() folds repeated
+  terms of one document into a single posting.
+end note
+
+note bottom of Postings
+  Parallel docIds / termFrequencies arrays
+  growing by doubling (from 4).
+end note
+
+@enduml

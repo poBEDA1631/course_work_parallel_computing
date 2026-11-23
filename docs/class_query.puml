@@ -1,0 +1,126 @@
+@startuml class_query
+title Package com.coursework.search.query
+
+skinparam classAttributeIconSize 0
+hide empty members
+
+package com.coursework.search.query {
+
+  class KeywordSearch <<final>> {
+    + {static} K : int = 10
+    - scorer : Bm25Scorer
+    - docIds : String[]
+    - datasetDir : Path
+    + KeywordSearch(index : InvertedIndex, docIds : String[], docLengths : int[], averageDocLength : double, documentCount : int, datasetDir : Path)
+    + search(query : String) : List<Result>
+    + search(query : ExpandedQuery) : List<Result>
+    ~ {static} normalize(hits : TopKSelector.Hit[]) : double[]
+    - snippet(docId : String, queryWords : String[]) : String
+  }
+
+  class "KeywordSearch.Result" as Result <<record>> {
+    + docId : String
+    + score : double
+    + snippet : String
+  }
+
+  class Bm25Scorer <<final>> {
+    + {static} K1 : double = 1.2
+    + {static} B : double = 0.75
+    - index : InvertedIndex
+    - docLengths : int[]
+    - averageDocLength : double
+    - documentCount : int
+    + Bm25Scorer(index : InvertedIndex, docLengths : int[], averageDocLength : double, documentCount : int)
+    + score(stemmedTerms : String[]) : double[]
+    + score(stemmedTerms : String[], weights : double[]) : double[]
+    ~ {static} idf(documentCount : int, documentFrequency : int) : double
+    - {static} largestWeight(terms : String[], weights : double[], first : int) : double
+    - {static} seenBefore(terms : String[], t : int) : boolean
+  }
+
+  class ExpandedQuery <<final>> {
+    + {static} ORIGINAL_WEIGHT : double = 1.0
+    + {static} EXPANSION_WEIGHT : double = 0.5
+    - words : String[]
+    - terms : String[]
+    - weights : double[]
+    - newTerms : List<String>
+    + {static} of(query : String) : ExpandedQuery
+    + {static} of(query : String, expansion : List<String>) : ExpandedQuery
+    + newTerms() : List<String>
+    ~ words() : String[]
+    ~ terms() : String[]
+    ~ weights() : double[]
+  }
+
+  class TopKSelector <<final>> {
+    - docIds : int[]
+    - scores : double[]
+    - size : int
+    + TopKSelector(k : int)
+    + offer(docId : int, score : double) : void
+    + size() : int
+    + sortedDescending() : Hit[]
+  }
+
+  class "TopKSelector.Hit" as Hit <<record>> {
+    + docId : int
+    + score : double
+  }
+
+  class SnippetBuilder <<final>> {
+    ~ {static} WINDOW : int = 100
+    ~ {static} FALLBACK_LENGTH : int = 200
+    + {static} build(text : String, queryWords : String[]) : String
+  }
+}
+
+package com.coursework.search.index {
+  class InvertedIndex
+  class Postings
+}
+note top of InvertedIndex : members: see class_index.puml
+
+package com.coursework.search.text {
+  class Tokenizer
+  class Stemmer
+}
+
+KeywordSearch *-- "1" Bm25Scorer : scorer
+KeywordSearch ..> ExpandedQuery : search(query)
+KeywordSearch ..> TopKSelector : top K
+KeywordSearch ..> SnippetBuilder : snippets
+KeywordSearch ..> Result : returns
+TopKSelector ..> Hit : returns
+Bm25Scorer --> "1" InvertedIndex : index
+Bm25Scorer ..> Postings : search(term)
+ExpandedQuery ..> Tokenizer
+ExpandedQuery ..> Stemmer
+
+note right of Bm25Scorer
+  score() fills a dense double[] indexed by doc id
+  (size = docLengths.length, skipped files included);
+  N in the idf is documentCount (indexed documents).
+  A term given twice counts once, with its largest weight.
+end note
+
+note right of ExpandedQuery
+  The user's stems get weight 1.0; each expansion keyword
+  is tokenized and stemmed, and stems not already in the
+  query get 0.5. newTerms(): keywords adding at least one
+  new stem. words(): the unstemmed query, for snippets.
+end note
+
+note bottom of TopKSelector
+  Bounded binary min-heap of k entries (root = worst kept);
+  higher score wins, ties go to the lower doc id.
+end note
+
+note bottom of KeywordSearch
+  search(String) = search(ExpandedQuery.of(query)),
+  used by POST /api/search. Scores are min-max
+  normalized over the returned hits.
+end note
+
+@enduml

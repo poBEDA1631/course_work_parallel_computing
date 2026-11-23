@@ -152,6 +152,21 @@ Diagrams (rendered SVG in `docs/`, each next to its PlantUML source):
 - [Deployment](docs/deployment.svg) ([source](docs/deployment.puml)): the four Compose services,
   their volumes, the network and the start-up dependencies.
 
+Class diagrams, one per package (rendered SVG with the PlantUML source):
+
+- [concurrent](docs/class_concurrent.svg) ([source](docs/class_concurrent.puml)): `ThreadPool`
+  with its bounded ring-buffer queue, worker threads and `Task`/`TaskHandle`.
+- [index](docs/class_index.svg) ([source](docs/class_index.puml)): `InvertedIndex` and its
+  shards, `LocalAccumulator`, `Postings` and the `Fnv1a` hash.
+- [indexing](docs/class_indexing.svg) ([source](docs/class_indexing.puml)): `DocumentLoader`,
+  `IndexBuilder` and `BuildResult`, and how they use the pool and the index.
+- [query](docs/class_query.svg) ([source](docs/class_query.puml)): `KeywordSearch`,
+  `Bm25Scorer`, `ExpandedQuery`, `TopKSelector` and `SnippetBuilder`.
+- [ollama](docs/class_ollama.svg) ([source](docs/class_ollama.puml)): `QueryExpansionService`,
+  its LRU `QueryExpansionCache` and `OllamaClient`.
+- [api](docs/class_api.svg) ([source](docs/class_api.puml)): `ApiServer`, `IndexService` and
+  `SearchSocket`, and the packages they depend on.
+
 ## Building locally
 
 Requires JDK 21.
