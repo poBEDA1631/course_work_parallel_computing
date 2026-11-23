@@ -1,0 +1,66 @@
+@startuml sequence_health_stats
+title Health and statistics: GET /api/health, GET /api/stats
+
+actor Client
+participant "ApiServer\n(GET /api/health,\nGET /api/stats)" as Api
+participant OllamaClient
+participant "ollama\n(container)" as Ollama
+participant IndexService
+
+== GET /api/health ==
+
+Client -> Api : GET /api/health
+activate Api
+Api -> OllamaClient : isAvailable()
+activate OllamaClient
+note right of OllamaClient: checked on every call,\nno background polling
+
+alt Ollama answers and lists the model
+  OllamaClient -> Ollama : GET /api/tags (timeout 1 s)
+  Ollama --> OllamaClient : 200 {"models": [{"name": "llama3.2:3b", ...}, ...]}
+  OllamaClient --> Api : true
+else Ollama answers, the model is not pulled yet
+  OllamaClient -> Ollama : GET /api/tags (timeout 1 s)
+  Ollama --> OllamaClient : 200, the model is not in "models"\n(or a non-200 status)
+  OllamaClient --> Api : false
+else Ollama too slow
+  OllamaClient -> Ollama : GET /api/tags (timeout 1 s)
+  Ollama -[#gray]-> OllamaClient : (no answer within 1 s)
+  OllamaClient -> OllamaClient : catch HttpTimeoutException (IOException)
+  OllamaClient --> Api : false
+else Ollama unreachable
+  OllamaClient -[#red]>x Ollama : GET /api/tags (connect timeout 1 s)
+  OllamaClient -> OllamaClient : catch ConnectException (IOException)
+  OllamaClient --> Api : false
+end
+deactivate OllamaClient
+Api --> Client : 200 {"status": "ok", "ollama": true | false}
+deactivate Api
+note over Client, Api
+  The backend does not depend on the model:
+  the answer is 200 in every case, "ollama" says whether expansion can work.
+end note
+
+== GET /api/stats ==
+
+Client -> Api : GET /api/stats
+activate Api
+Api -> IndexService : requireCurrent()
+activate IndexService
+IndexService -> IndexService : current.get()
+
+alt an index is published
+  IndexService --> Api : BuiltIndex(index, result, threads, docIds)
+  Api --> Client : 200 {"documents": result.documentsIndexed(),\n"index_build_time_ms": result.timeMs(),\n"threads_used": threads}
+else no index, building.get() is true
+  note right of IndexService: rebuild() released the old\nindex with current.set(null)
+  IndexService --> Api : throws ApiException(409, "index build in progress")
+  Api --> Client : 409 {"status": "error",\n"message": "index build in progress"}
+else no index, no build running
+  IndexService --> Api : throws ApiException(409, "index has not been built yet")
+  Api --> Client : 409 {"status": "error",\n"message": "index has not been built yet"}
+end
+deactivate IndexService
+deactivate Api
+
+@enduml

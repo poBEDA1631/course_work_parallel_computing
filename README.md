@@ -142,6 +142,14 @@ Diagrams (rendered SVG in `docs/`, each next to its PlantUML source):
 - [Building the index](docs/sequence_build_index.svg)
   ([source](docs/sequence_build_index.puml)): `POST /api/index` from `ApiServer`
   through `IndexService` and `IndexBuilder` to the thread pool and the per-shard merge.
+- [Keyword search](docs/sequence_search_keyword.svg)
+  ([source](docs/sequence_search_keyword.puml)): `POST /api/search` from parsing the body
+  through `ExpandedQuery`, `Bm25Scorer`, the index, `TopKSelector` and `SnippetBuilder` to the
+  answer, with the `400` and `409` branches.
+- [Health and statistics](docs/sequence_health_stats.svg)
+  ([source](docs/sequence_health_stats.puml)): `GET /api/health` checking Ollama through
+  `GET /api/tags` with a 1 s timeout (`"ollama": false` when it is slow, unreachable or has no
+  model), and `GET /api/stats` with its `409` while a build runs or before the first one.
 - [Search with expansion](docs/sequence_search_expansion.svg)
   ([source](docs/sequence_search_expansion.puml)): a `/ws/search` request when
   Ollama answers in time, through the three stages `query_expansion`, `keyword_search`, `done`.

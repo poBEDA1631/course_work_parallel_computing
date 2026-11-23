@@ -1,0 +1,83 @@
+@startuml sequence_search_keyword
+title Keyword search: POST /api/search
+
+actor Client
+participant "ApiServer\n(POST /api/search)" as Api
+participant IndexService
+participant KeywordSearch
+participant ExpandedQuery
+participant Bm25Scorer
+participant InvertedIndex
+participant IndexShard
+participant TopKSelector
+participant SnippetBuilder
+
+Client -> Api : POST /api/search\n{"query": "jazz piano", "mode": "keyword"}
+activate Api
+Api -> Api : parseSearchQuery(mapper, ctx)\nreadBody(mapper, ctx)
+
+alt body is not a JSON object, "query" is not a string or "mode" is not "keyword"
+  Api -> Api : throw ApiException(400, ...)
+  Api --> Client : 400 {"status": "error", "message": one of\nrequest body must be JSON | "query" must be a string |\n"mode" must be "keyword"}
+else valid request
+  Api -> IndexService : requireCurrent()
+  alt no index: a build is running or none was built yet
+    IndexService --> Api : throws ApiException(409, ...)
+    Api --> Client : 409 {"status": "error", "message":\n"index build in progress" | "index has not been built yet"}
+  else index available
+    IndexService --> Api : BuiltIndex
+    Api -> Api : start = System.nanoTime()
+    Api -> KeywordSearch ** : new KeywordSearch(index, docIds, docLengths,\naverageDocLength, documentsIndexed, datasetDir)
+    Api -> KeywordSearch : search(query)
+    activate KeywordSearch
+    KeywordSearch -> ExpandedQuery : of(query)
+    note right of ExpandedQuery
+      of(query, List.of()): Tokenizer.forEachToken,
+      Stemmer.stem, duplicate stems dropped;
+      every stem gets weight 1.0, no expansion terms
+    end note
+    ExpandedQuery --> KeywordSearch : terms jazz, piano (1.0 each);\nwords jazz, piano
+
+    KeywordSearch -> Bm25Scorer : score(query.terms(), query.weights())
+    activate Bm25Scorer
+    Bm25Scorer -> Bm25Scorer : scores = new double[docLengths.length]
+    loop for every distinct term
+      Bm25Scorer -> InvertedIndex : search(term)
+      InvertedIndex -> IndexShard : lookup(term, hash)\n(shard = fnv1a(term) & mask)
+      note right of IndexShard: under the shard's read lock
+      IndexShard --> InvertedIndex : Postings copy, or null
+      InvertedIndex --> Bm25Scorer : Postings snapshot, or null (term skipped)
+      Bm25Scorer -> Bm25Scorer : idf(documentCount, postings.size())\nscores[doc] += weight * idf * tf part
+    end
+    Bm25Scorer --> KeywordSearch : double[] scores
+    deactivate Bm25Scorer
+
+    KeywordSearch -> TopKSelector ** : new TopKSelector(K = 10)
+    loop for every doc with scores[doc] > 0
+      KeywordSearch -> TopKSelector : offer(doc, scores[doc])
+    end
+    KeywordSearch -> TopKSelector : sortedDescending()
+    TopKSelector --> KeywordSearch : Hit[] (at most 10, best first)
+    KeywordSearch -> KeywordSearch : normalize(hits)\n(min-max over the returned hits)
+
+    loop for every hit
+      KeywordSearch -> KeywordSearch : snippet(docId, query.words())\nFiles.readAllBytes(datasetDir/<doc_id>.txt)
+      note right: IOException: logged, snippet ""
+      KeywordSearch -> SnippetBuilder : build(text, queryWords)
+      SnippetBuilder --> KeywordSearch : snippet around the first\nliteral query word
+    end
+    KeywordSearch --> Api : List<Result> (docId, score, snippet)
+    deactivate KeywordSearch
+    Api -> Api : timeMs = (System.nanoTime() - start) / 1_000_000
+    Api --> Client : 200 {"results": [{"doc_id", "score", "snippet"}, ...],\n"time_ms": ...}
+  end
+end
+deactivate Api
+
+note over Client, Api
+  No indexed query term (an empty query, a word absent from the corpus):
+  every score is 0, nothing is offered, and the answer is 200 {"results": [], ...}.
+  Any other exception becomes 500 {"status": "error", "message": "internal error: ..."}.
+end note
+
+@enduml
