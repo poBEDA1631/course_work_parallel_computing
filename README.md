@@ -55,10 +55,19 @@ docker compose logs -f dataset-init
 Later starts download nothing: `dataset-init` finds `.complete` in the volume, logs `dataset
 already complete in /data, nothing to do` and exits.
 
+**First expansion after a pause.** After every successful index build the service sends Ollama
+one warm-up request of its own, so the model's memory is paged back in before the next query;
+`POST /api/index` answers only after that warm-up.
+The first expansion after a long idle period, or under heavy memory pressure on the host, can
+still exceed 5 s and return an empty `expanded_terms`; the failure is not cached, so the next
+request is expanded. Free memory on the host helps.
+
 **Duration of `POST /api/index`.** There is no index until the first build, and the request
 answers only when the build is finished. On the full corpus that took from 151.4 s with 1 thread
 down to 23.4 s with 16 threads on the E1 machine (MacBook M1 Pro, 8 vCPU, 7.75 GB VM; see
-[E1](bench/README.md#e1-build-time-against-threads)), so the client has to wait long enough:
+[E1](bench/README.md#e1-build-time-against-threads)), so the client has to wait long enough.
+The warm-up adds 1-4 s before the answer; `time_ms` is the build time only and does not include
+it:
 
 ```sh
 curl --max-time 600 -X POST localhost:8080/api/index \

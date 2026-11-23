@@ -9,6 +9,7 @@ package com.coursework.search.api {
   class ApiServer <<final>> {
     + {static} MAX_THREADS : int = 256
     + {static} create(indexService : IndexService, ollama : OllamaClient, expansion : QueryExpansionService) : Javalin
+    - {static} warmUp(expansion : QueryExpansionService, warmingUp : AtomicBoolean) : void
     - {static} parseThreads(mapper : ObjectMapper, ctx : Context) : int
     - {static} parseSearchQuery(mapper : ObjectMapper, ctx : Context) : String
     - {static} readBody(mapper : ObjectMapper, ctx : Context) : JsonNode
@@ -91,6 +92,7 @@ end note
 ApiServer ..> IndexService : /api/index, /api/stats, /api/search
 ApiServer ..> SearchSocket : creates, /ws/search
 ApiServer ..> OllamaClient : /api/health: isAvailable()
+ApiServer ..> QueryExpansionService : warmUp() after POST /api/index
 ApiServer ..> KeywordSearch : POST /api/search
 ApiServer ..> ApiException : 400 / 409 / 500
 IndexService *-- "0..1" BuiltIndex : current

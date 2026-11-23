@@ -10,10 +10,12 @@ package com.coursework.search.ollama {
     + {static} MAX_TERMS : int = 8
     ~ {static} MAX_TERM_WORDS : int = 3
     ~ {static} MAX_TERM_LENGTH : int = 40
+    ~ {static} WARM_UP_QUERY : String = "warm up"
     - client : OllamaClient
     - cache : QueryExpansionCache
     + QueryExpansionService(client : OllamaClient, cache : QueryExpansionCache)
     + expand(query : String) : List<String>
+    + warmUp() : void
     ~ {static} prompt(query : String) : String
     ~ {static} parse(answer : String) : List<String>
   }
@@ -54,7 +56,9 @@ package com.coursework.search.ollama {
     ~ OllamaClient(baseUrl : String, model : String, generateTimeout : Duration, healthTimeout : Duration)
     + model() : String
     + generate(prompt : String) : String
+    + generate(prompt : String, maxTokens : int) : String
     + isAvailable() : boolean
+    - send(prompt : String, maxTokens : int) : String
   }
 }
 
@@ -69,6 +73,9 @@ note right of QueryExpansionService
   3 words or 40 chars, dedupe, at most 8) and put() into the cache.
   IOException or RuntimeException from generate():
   logged, returns an empty list, nothing cached.
+  warmUp(): generate(prompt("warm up"), 1) after an index build,
+  before POST /api/index answers;
+  caches nothing, logs its time, never throws.
 end note
 
 note right of QueryExpansionCache
@@ -80,7 +87,8 @@ end note
 
 note bottom of OllamaClient
   generate(): POST {url}/api/generate, stream false,
-  temperature 0; throws IOException on timeout,
+  temperature 0; generate(prompt, maxTokens) adds
+  num_predict; throws IOException on timeout,
   connection failure, non-200 or a body without "response".
   isAvailable(): GET {url}/api/tags lists the model;
   any failure means false.

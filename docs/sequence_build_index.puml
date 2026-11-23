@@ -11,6 +11,9 @@ participant "pool worker\n(x threads)" as Worker
 participant LocalAccumulator
 participant InvertedIndex
 participant IndexShard
+participant QueryExpansionService
+participant OllamaClient
+participant "ollama\n(container)" as Ollama
 
 Client -> Api : POST /api/index {"threads": N}
 Api -> Api : parseThreads(mapper, ctx)
@@ -70,6 +73,24 @@ IndexService -> ThreadPool : awaitTermination(...)
 IndexService -> IndexService : building.set(false)
 IndexService --> Api : BuiltIndex
 deactivate IndexService
+
+Api -> Api : warmingUp.compareAndSet(false, true)
+note right: false (another request is warming up):\nskipped, the answer does not wait
+Api -> QueryExpansionService : warmUp()
+activate QueryExpansionService
+QueryExpansionService -> OllamaClient : generate(prompt("warm up"), 1)
+activate OllamaClient
+OllamaClient -> Ollama : POST /api/generate\n{model, prompt, stream: false,\noptions: {temperature: 0, num_predict: 1}}\n(timeout 5 s)
+Ollama --> OllamaClient : 200 {"response": ...}
+OllamaClient --> QueryExpansionService : one token
+deactivate OllamaClient
+QueryExpansionService --> Api : (nothing cached; time logged)
+deactivate QueryExpansionService
+note right of QueryExpansionService
+  failure is logged and ignored;
+  time_ms excludes the warm-up
+end note
+Api -> Api : warmingUp.set(false)
 Api --> Client : 200 {"status": "ok",\n"documents_indexed": ..., "time_ms": ...}
 
 @enduml
