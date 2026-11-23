@@ -88,6 +88,28 @@ class ApiServerTest {
   }
 
   @Test
+  void successfulBuildWarmsOllamaUpBeforeAnswering() throws Exception {
+    try (FakeOllama ollama = new FakeOllama()) {
+      app.stop();
+      app = ollama.server(new IndexService(dataset)).start(0);
+
+      assertEquals(200, post("/api/index", "{\"threads\": 2}").statusCode());
+      assertEquals(1, ollama.warmUpCalls.get());
+      assertEquals(0, ollama.generateCalls.get());
+    }
+  }
+
+  @Test
+  void buildSucceedsWhenTheWarmUpCannotReachOllama() throws Exception {
+    // The default server of this class points at a port nothing listens on.
+    HttpResponse<String> response = post("/api/index", "{\"threads\": 2}");
+    assertEquals(200, response.statusCode(), response.body());
+    JsonNode body = JSON.readTree(response.body());
+    assertEquals("ok", body.get("status").asText());
+    assertEquals(3, body.get("documents_indexed").asInt());
+  }
+
+  @Test
   void builtIndexKeepsDocIdsOfTheFilesItWasBuiltFrom() throws Exception {
     IndexService service = new IndexService(dataset);
     IndexService.BuiltIndex built = service.rebuild(2);

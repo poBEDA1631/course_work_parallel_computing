@@ -30,7 +30,11 @@ final class FakeOllama implements AutoCloseable {
   volatile String answer = "";
   volatile boolean holdGenerate;
   final CountDownLatch release = new CountDownLatch(1);
+
+  /** Expansion requests; warm-ups (with {@code num_predict}) are counted apart and never held. */
   final AtomicInteger generateCalls = new AtomicInteger();
+
+  final AtomicInteger warmUpCalls = new AtomicInteger();
 
   private final HttpServer server;
   private final ExecutorService executor = Executors.newCachedThreadPool();
@@ -42,8 +46,14 @@ final class FakeOllama implements AutoCloseable {
     server.createContext(
         "/api/generate",
         exchange -> {
+          String body =
+              new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+          if (body.contains("\"num_predict\"")) {
+            warmUpCalls.incrementAndGet();
+            respond(exchange, "{\"response\": \"x\"}");
+            return;
+          }
           generateCalls.incrementAndGet();
-          exchange.getRequestBody().readAllBytes();
           if (holdGenerate) {
             try {
               release.await();

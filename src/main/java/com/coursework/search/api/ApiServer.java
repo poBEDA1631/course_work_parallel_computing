@@ -11,6 +11,7 @@ import io.javalin.http.Context;
 import io.javalin.http.staticfiles.Location;
 import io.javalin.json.JavalinJackson;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,6 +37,7 @@ public final class ApiServer {
     ObjectMapper mapper =
         new ObjectMapper().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
     SearchSocket searchSocket = new SearchSocket(indexService, expansion, mapper);
+    AtomicBoolean warmingUp = new AtomicBoolean();
     Javalin app =
         Javalin.create(
             config -> {
@@ -58,6 +60,8 @@ public final class ApiServer {
               built.result().documentsSkipped(),
               threads,
               built.result().timeMs());
+          // time_ms stays the build time alone; the warm-up only delays the answer.
+          warmUp(expansion, warmingUp);
           ctx.json(
               new IndexResponse("ok", built.result().documentsIndexed(), built.result().timeMs()));
         });
@@ -101,6 +105,22 @@ public final class ApiServer {
           ctx.status(500).json(new ErrorResponse("error", "internal error: " + e));
         });
     return app;
+  }
+
+  /**
+   * Warms Ollama up on the calling thread after a build, the most memory-heavy phase, so that the
+   * answer to {@code POST /api/index} comes only once the model is paged back in. If another
+   * request is already warming up, returns at once instead of waiting for it.
+   */
+  private static void warmUp(QueryExpansionService expansion, AtomicBoolean warmingUp) {
+    if (!warmingUp.compareAndSet(false, true)) {
+      return;
+    }
+    try {
+      expansion.warmUp();
+    } finally {
+      warmingUp.set(false);
+    }
   }
 
   /** Requires {@code {"threads": N}} with an integral N in [1, MAX_THREADS]. */
