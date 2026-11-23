@@ -1,6 +1,7 @@
 package com.coursework.search.ollama;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -10,6 +11,9 @@ import java.net.ServerSocket;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -172,13 +176,15 @@ class QueryExpansionServiceTest {
     QueryExpansionCache cache = new QueryExpansionCache();
     OllamaClient client =
         new OllamaClient(stub.url(), "llama3.2:3b", Duration.ofMillis(300), Duration.ofMillis(300));
-    QueryExpansionService warmed = new QueryExpansionService(client, cache);
+    QueryExpansionService warmed =
+        new QueryExpansionService(client, cache, Duration.ofMillis(300), System::nanoTime);
     stub.respondWithText("horror, thriller");
 
-    warmed.warmUp();
+    assertTrue(warmed.warmUp());
     assertEquals(0, cache.size());
-    assertEquals(1, stub.generateCalls.get());
-    JsonNode sent = new ObjectMapper().readTree(stub.lastGenerateBody.get());
+    assertEquals(1, stub.warmUpCalls.get());
+    assertEquals(0, stub.generateCalls.get());
+    JsonNode sent = new ObjectMapper().readTree(stub.lastWarmUpBody.get());
     assertEquals(
         QueryExpansionService.prompt(QueryExpansionService.WARM_UP_QUERY),
         sent.get("prompt").asText());
@@ -187,7 +193,7 @@ class QueryExpansionServiceTest {
 
     // The real query is still asked, not answered from anything the warm-up left behind.
     assertEquals(List.of("horror", "thriller"), warmed.expand("warm up"));
-    assertEquals(2, stub.generateCalls.get());
+    assertEquals(1, stub.generateCalls.get());
   }
 
   @Test
@@ -196,12 +202,123 @@ class QueryExpansionServiceTest {
     try (ServerSocket socket = new ServerSocket(0)) {
       port = socket.getLocalPort();
     }
-    serviceFor("http://127.0.0.1:" + port).warmUp();
+    assertFalse(serviceFor("http://127.0.0.1:" + port).warmUp());
+    stub.warmUpStatus = 500;
+    assertFalse(service.warmUp());
+    stub.warmUpStatus = 200;
+    stub.holdWarmUp = true;
+    assertFalse(service.warmUp());
+  }
+
+  @Test
+  void failedExpansionStartsExactlyOneBackgroundWarmUp() throws Exception {
     stub.generateStatus = 500;
-    service.warmUp();
-    stub.generateStatus = 200;
-    stub.holdGenerate = true;
-    service.warmUp();
+    assertEquals(List.of(), service.expand("q"));
+    assertEquals(1, service.recoveryStarts());
+    awaitTrue(() -> stub.warmUpCalls.get() == 1 && !service.recoveryRunning());
+    assertEquals(1, stub.warmUpCalls.get());
+    JsonNode sent = new ObjectMapper().readTree(stub.lastWarmUpBody.get());
+    assertEquals(
+        QueryExpansionService.prompt(QueryExpansionService.WARM_UP_QUERY),
+        sent.get("prompt").asText());
+    assertEquals(1, sent.get("options").get("num_predict").asInt());
+  }
+
+  @Test
+  void recoveryWarmUpsStartAtLeastTheIntervalApart() {
+    AtomicLong now = new AtomicLong();
+    QueryExpansionService clocked = serviceFor(stub.url(), now::get);
+    stub.generateStatus = 500;
+    long interval = QueryExpansionService.RECOVERY_INTERVAL.toNanos();
+
+    clocked.expand("first");
+    awaitTrue(() -> !clocked.recoveryRunning());
+    now.set(interval - 1);
+    clocked.expand("second");
+    // Not because a warm-up is still running: the first one has finished.
+    assertEquals(1, clocked.recoveryStarts());
+    now.set(interval);
+    clocked.expand("third");
+    assertEquals(2, clocked.recoveryStarts());
+    awaitTrue(() -> stub.warmUpCalls.get() == 2 && !clocked.recoveryRunning());
+    assertEquals(2, stub.warmUpCalls.get());
+  }
+
+  @Test
+  void connectionFailureAllowsTheNextWarmUpAfterTheRetryInterval() throws IOException {
+    AtomicLong now = new AtomicLong();
+    QueryExpansionService clocked = serviceFor(closedPortUrl(), now::get);
+
+    clocked.expand("first");
+    awaitTrue(() -> !clocked.recoveryRunning());
+    now.set(QueryExpansionService.RECOVERY_RETRY_INTERVAL.toNanos());
+    clocked.expand("second");
+    assertEquals(2, clocked.recoveryStarts());
+    awaitTrue(() -> !clocked.recoveryRunning());
+  }
+
+  @Test
+  void connectionFailureStillBlocksWarmUpsBeforeTheRetryInterval() throws IOException {
+    AtomicLong now = new AtomicLong();
+    QueryExpansionService clocked = serviceFor(closedPortUrl(), now::get);
+
+    clocked.expand("first");
+    awaitTrue(() -> !clocked.recoveryRunning());
+    now.set(QueryExpansionService.RECOVERY_RETRY_INTERVAL.toNanos() - 1);
+    clocked.expand("second");
+    assertEquals(1, clocked.recoveryStarts());
+  }
+
+  @Test
+  void timedOutWarmUpKeepsTheFullInterval() {
+    AtomicLong now = new AtomicLong();
+    QueryExpansionService clocked = serviceFor(stub.url(), now::get);
+    stub.generateStatus = 500;
+    // The warm-up reaches Ollama but gets no answer within its 300 ms timeout.
+    stub.holdWarmUp = true;
+
+    clocked.expand("first");
+    awaitTrue(() -> stub.warmUpCalls.get() == 1 && !clocked.recoveryRunning());
+    now.set(QueryExpansionService.RECOVERY_RETRY_INTERVAL.toNanos());
+    clocked.expand("second");
+    assertEquals(1, clocked.recoveryStarts());
+    now.set(QueryExpansionService.RECOVERY_INTERVAL.toNanos());
+    clocked.expand("third");
+    assertEquals(2, clocked.recoveryStarts());
+    stub.holdWarmUps.countDown();
+    awaitTrue(() -> !clocked.recoveryRunning());
+  }
+
+  @Test
+  void expandReturnsWithoutWaitingForTheWarmUp() {
+    AtomicLong now = new AtomicLong();
+    QueryExpansionService clocked = serviceFor(stub.url(), now::get, Duration.ofSeconds(20));
+    stub.generateStatus = 500;
+    stub.holdWarmUp = true;
+
+    assertEquals(List.of(), clocked.expand("q"));
+    awaitTrue(() -> stub.warmUpCalls.get() == 1);
+    // expand() has returned while the warm-up is still held in the stub.
+    assertTrue(clocked.recoveryRunning());
+    // A running warm-up is not joined by a second one, even past the interval.
+    now.set(2 * QueryExpansionService.RECOVERY_INTERVAL.toNanos());
+    assertEquals(List.of(), clocked.expand("q"));
+    assertEquals(1, clocked.recoveryStarts());
+    stub.holdWarmUps.countDown();
+    awaitTrue(() -> !clocked.recoveryRunning());
+  }
+
+  @Test
+  void warmUpWaitsForItsOwnTimeoutWhileExpansionUsesTheGenerateTimeout() {
+    assertEquals(Duration.ofSeconds(5), OllamaClient.GENERATE_TIMEOUT);
+    assertEquals(Duration.ofSeconds(30), QueryExpansionService.WARM_UP_TIMEOUT);
+    // Slower than the expansion timeout of 300 ms, faster than a 3 s warm-up timeout.
+    stub.generateDelayMillis = 800;
+    stub.respondWithText("slow, answer");
+
+    assertEquals(List.of(), service.expand("q"));
+    assertTrue(serviceFor(stub.url(), System::nanoTime, Duration.ofSeconds(3)).warmUp());
+    assertFalse(serviceFor(stub.url(), System::nanoTime, Duration.ofMillis(300)).warmUp());
   }
 
   @Test
@@ -211,8 +328,32 @@ class QueryExpansionServiceTest {
   }
 
   private static QueryExpansionService serviceFor(String url) {
+    return serviceFor(url, System::nanoTime);
+  }
+
+  private static QueryExpansionService serviceFor(String url, LongSupplier clock) {
+    return serviceFor(url, clock, Duration.ofMillis(300));
+  }
+
+  /** Expansion timeout 300 ms; the warm-up timeout as given. */
+  private static QueryExpansionService serviceFor(
+      String url, LongSupplier clock, Duration warmUpTimeout) {
     OllamaClient client =
         new OllamaClient(url, "llama3.2:3b", Duration.ofMillis(300), Duration.ofMillis(300));
-    return new QueryExpansionService(client, new QueryExpansionCache());
+    return new QueryExpansionService(client, new QueryExpansionCache(), warmUpTimeout, clock);
+  }
+
+  private static String closedPortUrl() throws IOException {
+    try (ServerSocket socket = new ServerSocket(0)) {
+      return "http://127.0.0.1:" + socket.getLocalPort();
+    }
+  }
+
+  private static void awaitTrue(BooleanSupplier condition) {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (!condition.getAsBoolean()) {
+      assertTrue(System.nanoTime() < deadline, "condition not reached within 10 s");
+      Thread.onSpinWait();
+    }
   }
 }

@@ -49,22 +49,24 @@ public final class OllamaClient {
    *     textual {@code response} field
    */
   public String generate(String prompt) throws IOException, InterruptedException {
-    return send(prompt, 0);
+    return send(prompt, 0, generateTimeout);
   }
 
   /**
    * Like {@link #generate(String)}, but stops after {@code maxTokens} generated tokens ({@code
-   * options.num_predict}).
+   * options.num_predict}) and waits up to {@code timeout} instead of the generate timeout.
    */
-  public String generate(String prompt, int maxTokens) throws IOException, InterruptedException {
+  public String generate(String prompt, int maxTokens, Duration timeout)
+      throws IOException, InterruptedException {
     if (maxTokens < 1) {
       throw new IllegalArgumentException("maxTokens must be at least 1");
     }
-    return send(prompt, maxTokens);
+    return send(prompt, maxTokens, timeout);
   }
 
   /** {@code maxTokens == 0} leaves {@code num_predict} out, so Ollama's default applies. */
-  private String send(String prompt, int maxTokens) throws IOException, InterruptedException {
+  private String send(String prompt, int maxTokens, Duration timeout)
+      throws IOException, InterruptedException {
     ObjectNode body = JSON.createObjectNode().put("model", model).put("prompt", prompt);
     body.put("stream", false);
     ObjectNode options = body.putObject("options").put("temperature", 0);
@@ -73,7 +75,7 @@ public final class OllamaClient {
     }
     HttpRequest request =
         HttpRequest.newBuilder(baseUrl.resolve("api/generate"))
-            .timeout(generateTimeout)
+            .timeout(timeout)
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(body)))
             .build();

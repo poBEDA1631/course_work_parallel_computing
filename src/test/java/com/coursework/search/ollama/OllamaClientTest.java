@@ -60,12 +60,13 @@ class OllamaClientTest {
   @Test
   void generateWithMaxTokensAddsNumPredict() throws Exception {
     stub.respondWithText("x");
-    assertEquals("x", client.generate("the prompt", 1));
+    assertEquals("x", client.generate("the prompt", 1, Duration.ofSeconds(1)));
     assertEquals(
         "{\"model\":\"llama3.2:3b\",\"prompt\":\"the prompt\",\"stream\":false,"
             + "\"options\":{\"temperature\":0,\"num_predict\":1}}",
-        stub.lastGenerateBody.get());
-    assertThrows(IllegalArgumentException.class, () -> client.generate("p", 0));
+        stub.lastWarmUpBody.get());
+    assertThrows(
+        IllegalArgumentException.class, () -> client.generate("p", 0, Duration.ofSeconds(1)));
   }
 
   @Test
