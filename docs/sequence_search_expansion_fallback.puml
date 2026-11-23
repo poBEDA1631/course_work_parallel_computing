@@ -8,6 +8,7 @@ participant QueryExpansionService
 participant QueryExpansionCache
 participant OllamaClient
 participant "ollama\n(container)" as Ollama
+participant "ollama-recovery\n(daemon thread)" as Recovery
 participant ExpandedQuery
 participant KeywordSearch
 participant Bm25Scorer
@@ -47,7 +48,15 @@ note right of QueryExpansionService
   the next request for this query
   asks Ollama again.
 end note
-QueryExpansionService --> SearchSocket : List.of()  (no terms)
+QueryExpansionService -> QueryExpansionService : startRecovery()\nrecovering.compareAndSet(false, true),\nlast start at least RECOVERY_INTERVAL ago\n(RECOVERY_RETRY_INTERVAL after ConnectException)
+QueryExpansionService -> Recovery ** : new Thread(..., "ollama-recovery").start()
+note right of Recovery
+  a failed expansion starts a background
+  warm-up (timeout 30 s, at most one per 30 s);
+  after a connection failure the next attempt
+  is allowed after 2 s
+end note
+QueryExpansionService --> SearchSocket : List.of()  (no terms, without waiting)
 deactivate QueryExpansionService
 
 SearchSocket -> ExpandedQuery : of(query, [])
@@ -66,6 +75,19 @@ SearchSocket -> Client : {"stage": "keyword_search", "data":\n{"results": [...],
 SearchSocket -> SearchSocket : finish(...): session.busy.set(false)
 SearchSocket -> Client : {"stage": "done"}
 deactivate SearchSocket
+
+group meanwhile, on ollama-recovery
+  activate Recovery
+  Recovery -> QueryExpansionService : runWarmUp()
+  QueryExpansionService -> OllamaClient : generate(prompt("warm up"), 1, WARM_UP_TIMEOUT)
+  OllamaClient -> Ollama : POST /api/generate\n{..., options: {temperature: 0, num_predict: 1}}\n(timeout WARM_UP_TIMEOUT = 30 s)
+  note right of Ollama: a cold model can finish loading:\nthis client stays connected
+  Ollama --> OllamaClient : 200 {"response": ...} (or a failure, logged)
+  OllamaClient --> QueryExpansionService : one token
+  QueryExpansionService --> Recovery : null or the failure (time logged)
+  Recovery -> Recovery : lastRecoveryUnreachable =\nfailure instanceof ConnectException;\nrecovering.set(false)
+  deactivate Recovery
+end
 
 note over Client, Bm25Scorer
   No error reaches the client: an unavailable Ollama only removes the expansion.

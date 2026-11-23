@@ -11,11 +11,26 @@ package com.coursework.search.ollama {
     ~ {static} MAX_TERM_WORDS : int = 3
     ~ {static} MAX_TERM_LENGTH : int = 40
     ~ {static} WARM_UP_QUERY : String = "warm up"
+    + {static} WARM_UP_TIMEOUT : Duration = 30 s
+    + {static} RECOVERY_INTERVAL : Duration = 30 s
+    + {static} RECOVERY_RETRY_INTERVAL : Duration = 2 s
     - client : OllamaClient
     - cache : QueryExpansionCache
+    - warmUpTimeout : Duration
+    - nanoClock : LongSupplier
+    - recovering : AtomicBoolean
+    - recoveryStarts : AtomicInteger
+    - recoveredBefore : boolean
+    - lastRecoveryStart : long
+    - lastRecoveryUnreachable : boolean
     + QueryExpansionService(client : OllamaClient, cache : QueryExpansionCache)
+    ~ QueryExpansionService(client : OllamaClient, cache : QueryExpansionCache, warmUpTimeout : Duration, nanoClock : LongSupplier)
     + expand(query : String) : List<String>
-    + warmUp() : void
+    + warmUp() : boolean
+    - runWarmUp() : Exception
+    - startRecovery() : void
+    ~ recoveryRunning() : boolean
+    ~ recoveryStarts() : int
     ~ {static} prompt(query : String) : String
     ~ {static} parse(answer : String) : List<String>
   }
@@ -56,9 +71,9 @@ package com.coursework.search.ollama {
     ~ OllamaClient(baseUrl : String, model : String, generateTimeout : Duration, healthTimeout : Duration)
     + model() : String
     + generate(prompt : String) : String
-    + generate(prompt : String, maxTokens : int) : String
+    + generate(prompt : String, maxTokens : int, timeout : Duration) : String
     + isAvailable() : boolean
-    - send(prompt : String, maxTokens : int) : String
+    - send(prompt : String, maxTokens : int, timeout : Duration) : String
   }
 }
 
@@ -72,10 +87,14 @@ note right of QueryExpansionService
   parse() (comma split, trim, lower-case, drop terms over
   3 words or 40 chars, dedupe, at most 8) and put() into the cache.
   IOException or RuntimeException from generate():
-  logged, returns an empty list, nothing cached.
-  warmUp(): generate(prompt("warm up"), 1) after an index build,
-  before POST /api/index answers;
-  caches nothing, logs its time, never throws.
+  logged, returns an empty list, nothing cached,
+  and startRecovery() runs warmUp() on a daemon thread
+  "ollama-recovery": at most one at a time, starts at least
+  RECOVERY_INTERVAL apart, or RECOVERY_RETRY_INTERVAL after a
+  warm-up that failed with ConnectException; expand() never waits for it.
+  warmUp(): generate(prompt("warm up"), 1, WARM_UP_TIMEOUT),
+  also after an index build, before POST /api/index answers;
+  caches nothing, logs its time, never throws, true if answered.
 end note
 
 note right of QueryExpansionCache
@@ -87,8 +106,9 @@ end note
 
 note bottom of OllamaClient
   generate(): POST {url}/api/generate, stream false,
-  temperature 0; generate(prompt, maxTokens) adds
-  num_predict; throws IOException on timeout,
+  temperature 0, generate timeout 5 s;
+  generate(prompt, maxTokens, timeout) adds num_predict
+  and uses the given timeout; throws IOException on timeout,
   connection failure, non-200 or a body without "response".
   isAvailable(): GET {url}/api/tags lists the model;
   any failure means false.

@@ -57,17 +57,24 @@ already complete in /data, nothing to do` and exits.
 
 **First expansion after a pause.** After every successful index build the service sends Ollama
 one warm-up request of its own, so the model's memory is paged back in before the next query;
-`POST /api/index` answers only after that warm-up.
-The first expansion after a long idle period, or under heavy memory pressure on the host, can
-still exceed 5 s and return an empty `expanded_terms`; the failure is not cached, so the next
-request is expanded. Free memory on the host helps.
+`POST /api/index` answers only after that warm-up, which waits up to 30 s when the model is
+cold. The first expansion after a long idle period, or under heavy memory pressure on the host,
+can still exceed 5 s and return an empty `expanded_terms`; the failure is not cached, so the
+next request is expanded. Free memory on the host helps.
+
+**Ollama restarts.** A restarted `ollama` has the model unloaded, and `/api/health` reports
+`"ollama": true` as soon as the model is listed, before it is loaded. Expansions then return
+`[]` until a failed one starts a background warm-up that loads the model again (see
+[Query expansion](#query-expansion)); in testing, after `docker compose start ollama` the first
+expansion came back after 21.6 s and every one from 55.7 s on (one request every 5 s). If it does not come back, `docker compose up -d ollama-init`
+loads the model by hand.
 
 **Duration of `POST /api/index`.** There is no index until the first build, and the request
 answers only when the build is finished. On the full corpus that took from 151.4 s with 1 thread
 down to 23.4 s with 16 threads on the E1 machine (MacBook M1 Pro, 8 vCPU, 7.75 GB VM; see
 [E1](bench/README.md#e1-build-time-against-threads)), so the client has to wait long enough.
-The warm-up adds 1-4 s before the answer; `time_ms` is the build time only and does not include
-it:
+The warm-up adds 1-4 s before the answer (up to 30 s with a cold model); `time_ms` is the build
+time only and does not include it:
 
 ```sh
 curl --max-time 600 -X POST localhost:8080/api/index \
@@ -448,6 +455,14 @@ fixed few-shot prompt, temperature 0 and a 5 s timeout.
   expansion prompt once after the pull. A cold load takes much longer than 5 s, and Ollama
   aborts a load whose client has disconnected, so without the warm-up every expansion would
   time out. Warm calls take about 2-3 s on 8 CPU cores.
+- Self-recovery: a failed expansion (timeout, unreachable server, error status) also starts a
+  warm-up on a background thread: the same prompt for the query `warm up`, one generated token,
+  with its own 30 s timeout, so a cold load can finish. At most one runs at a time, two starts
+  are at least 30 s apart (2 s after a warm-up that could not connect, as while `ollama` is
+  still starting), and the request that failed does not wait for it. The same warm-up,
+  with the same timeout, runs after every index build.
+- `/api/health` only checks that the model is listed in `GET /api/tags`, not that it is
+  loaded; `docker compose up -d ollama-init` is the manual fallback when expansion stays empty.
 
 Example (`llama3.2:3b`, CPU): `space movies` -> `science fiction, alien, galaxy, cosmos,
 adventure, blockbuster, extraterrestrial`.

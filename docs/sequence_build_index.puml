@@ -78,9 +78,9 @@ Api -> Api : warmingUp.compareAndSet(false, true)
 note right: false (another request is warming up):\nskipped, the answer does not wait
 Api -> QueryExpansionService : warmUp()
 activate QueryExpansionService
-QueryExpansionService -> OllamaClient : generate(prompt("warm up"), 1)
+QueryExpansionService -> OllamaClient : generate(prompt("warm up"), 1, WARM_UP_TIMEOUT)
 activate OllamaClient
-OllamaClient -> Ollama : POST /api/generate\n{model, prompt, stream: false,\noptions: {temperature: 0, num_predict: 1}}\n(timeout 5 s)
+OllamaClient -> Ollama : POST /api/generate\n{model, prompt, stream: false,\noptions: {temperature: 0, num_predict: 1}}\n(timeout WARM_UP_TIMEOUT = 30 s)
 Ollama --> OllamaClient : 200 {"response": ...}
 OllamaClient --> QueryExpansionService : one token
 deactivate OllamaClient
