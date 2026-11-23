@@ -218,3 +218,52 @@ Results (2026-11-22, same machine as E1 and E2, 3 trials of 20 s):
 - The one-slot baseline expanded more often than the same points of E2 (81 % against 33 % at 2
   clients): in E2 every WebSocket window followed 20 s of REST load on the same CPU, here it did
   not. That is why E3 measures its own baseline instead of reusing E2's numbers.
+
+## Search test cases
+
+```sh
+python3 bench/run_search_cases.py      # needs a built index; writes bench/search_cases.csv
+```
+
+- `run_search_cases.py` needs only the Python 3 standard library (the WebSocket client is a few
+  lines over a socket). Each case states its expected result as a condition written in the script
+  before the run; the script checks it and writes `pass` or `fail`. It exits with status 1 if any
+  case fails.
+- Whether a document contains a word is checked on the whole document, read from the `search`
+  container with `docker compose exec`, not on the snippet (a snippet shows only the first
+  occurrence of one word). The script tokenizes and stems the text with the same rules as
+  `Tokenizer` and `Stemmer`.
+- Output: `bench/search_cases.csv` with `case,query,request,expected,actual,verdict`. `actual`
+  gives the HTTP status, the number of results, the server's `time_ms` and the top 3 `doc_id`s
+  with a snippet fragment near a query word. Options: `--url` (default `http://localhost:8080`),
+  `--compose-file`, `--out`.
+- Query choice: `xylophonist` occurs in 7 documents, so the rare-term case is not cut at 10.
+  `hemidemisemiquaver` is a real English word that the corpus does not contain. For the two-word
+  case `jazz piano` would prove nothing, because all of its top 10 contain both words; in
+  `xylophonist jazz` only 3 documents have both, so the top 10 mixes both kinds of documents.
+- The empty query is a valid string with no indexed term, so it returns `200` with
+  `"results": []`, as the README states for `POST /api/search`.
+- The WebSocket case passes with an empty `expanded_terms` too: when Ollama is slow, the contract
+  is to search the original query. In the run below the expansion came from the server's cache.
+  The first `jazz piano` request timed out at 5 s while the host was loaded, and a later request
+  filled the cache.
+
+### Results in this directory
+
+`search_cases.csv` was measured on 2026-11-23 on the machine from E1, against the full index of
+611,120 documents built with 16 threads:
+
+| Case | Query | Expected | Actual | Verdict |
+|---|---|---|---|---|
+| rare_term | `xylophonist` | 200, at least one result, the top-1 document contains the term | 7 results; top-1 `B0009K7R9I` contains it; 10 ms | pass |
+| two_words | `xylophonist jazz` | the top 10 has documents with both words and with one only; all with both rank above all with one | both at ranks 1-3, one word only at ranks 4-10; 5 ms | pass |
+| case_insensitive | `JAZZ Piano` | the same 10 doc_ids, order and scores as `jazz piano` | identical; top-1 `B003TLMUAK`; 8 ms | pass |
+| stemming | `jazz albums` | the same 10 doc_ids, order and scores as `jazz album` | identical; top-1 `B007Y57174`; 27 ms | pass |
+| repeated_term | `jazz jazz piano` | the same 10 doc_ids, order and scores as `jazz piano` | identical; 11 ms | pass |
+| punctuation | `jazz, piano!` | the same 10 doc_ids, order and scores as `jazz piano` | identical; 10 ms | pass |
+| missing_word | `hemidemisemiquaver` | 200 and `"results": []` | 200, 0 results; 2 ms | pass |
+| empty_query | `""` | 200 and `"results": []` | 200, 0 results; 5 ms | pass |
+| bad_mode | `jazz piano`, `"mode": "semantic"` | 400 and `{"status": "error", "message": string}` | 400, `"mode" must be "keyword"` | pass |
+| normalization | `jazz piano` | top-1 score 1.0, last 0.0, scores never increase | 1.000, 0.987, 0.967, 0.885, 0.410, 0.390, 0.280, 0.152, 0.096, 0.000 | pass |
+| common_word | `movie` | 200 and exactly 10 results | 10 results; 12 ms | pass |
+| websocket | `jazz piano` over `/ws/search` | `query_expansion` -> `keyword_search` -> `done`; `original` equals the query; a result with all query words; every result has a query or expansion term | stages in that order; 6 expansion terms; all 10 results contain both words; 13 ms | pass |
