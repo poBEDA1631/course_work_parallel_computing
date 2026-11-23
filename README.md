@@ -117,6 +117,38 @@ a server error, no server, no answer within 30 s, or a missing query or bad opti
 printed and nothing is sent). If the stack is not up, `./search` fails with Docker's
 `service "search" is not running`.
 
+## Screenshots and diagrams
+
+Screenshots (`docs/`, taken against the full corpus of 611,120 documents):
+
+- [Search results](docs/web_ui_search_results.png): the Web UI after a search for "Kanye west",
+  with the expansion terms from Ollama as badges and the ten ranked results with scores and
+  snippets.
+- [Index building](docs/web_ui_index_building.png): a build with 8 threads in progress; the
+  button is disabled and shows `Building...` while the previous results stay on the page.
+- [Index rebuilt](docs/web_ui_index_rebuilt.png): the statistics of the finished rebuild
+  (8 threads, 44.8 s) and the same query answered again with the same expansion.
+- [Search during a build](docs/web_ui_build_in_progress_error.png): a search sent while the
+  index is being rebuilt, answered with the red `index build in progress` banner.
+- [No results](docs/web_ui_no_results.png): a query with no indexed term, shown as
+  `No expansion.` and `No results.` rather than as an error.
+- [Command-line client](docs/cli_output.png): `./search kanye west` in a terminal, printing the
+  expansion and the ranked results as the stages arrive.
+
+Diagrams (PlantUML sources in `docs/`):
+
+- [Use cases](docs/use_case.puml): what a user does through the Web UI, the CLI or the API, and
+  which use cases depend on Ollama.
+- [Building the index](docs/sequence_build_index.puml): `POST /api/index` from `ApiServer`
+  through `IndexService` and `IndexBuilder` to the thread pool and the per-shard merge.
+- [Search with expansion](docs/sequence_search_expansion.puml): a `/ws/search` request when
+  Ollama answers in time, through the three stages `query_expansion`, `keyword_search`, `done`.
+- [Search when Ollama fails](docs/sequence_search_expansion_fallback.puml): the same request when
+  Ollama times out, is unreachable or answers with an error, and the search runs on the original
+  query.
+- [Deployment](docs/deployment.puml): the four Compose services, their volumes, the network and
+  the start-up dependencies.
+
 ## Building locally
 
 Requires JDK 21.
