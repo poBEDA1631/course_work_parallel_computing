@@ -49,9 +49,28 @@ public final class OllamaClient {
    *     textual {@code response} field
    */
   public String generate(String prompt) throws IOException, InterruptedException {
+    return send(prompt, 0);
+  }
+
+  /**
+   * Like {@link #generate(String)}, but stops after {@code maxTokens} generated tokens ({@code
+   * options.num_predict}).
+   */
+  public String generate(String prompt, int maxTokens) throws IOException, InterruptedException {
+    if (maxTokens < 1) {
+      throw new IllegalArgumentException("maxTokens must be at least 1");
+    }
+    return send(prompt, maxTokens);
+  }
+
+  /** {@code maxTokens == 0} leaves {@code num_predict} out, so Ollama's default applies. */
+  private String send(String prompt, int maxTokens) throws IOException, InterruptedException {
     ObjectNode body = JSON.createObjectNode().put("model", model).put("prompt", prompt);
     body.put("stream", false);
-    body.putObject("options").put("temperature", 0);
+    ObjectNode options = body.putObject("options").put("temperature", 0);
+    if (maxTokens > 0) {
+      options.put("num_predict", maxTokens);
+    }
     HttpRequest request =
         HttpRequest.newBuilder(baseUrl.resolve("api/generate"))
             .timeout(generateTimeout)

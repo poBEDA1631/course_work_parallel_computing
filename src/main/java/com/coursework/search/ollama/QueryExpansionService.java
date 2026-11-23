@@ -22,6 +22,9 @@ public final class QueryExpansionService {
 
   static final int MAX_TERM_LENGTH = 40;
 
+  /** Shares the whole prompt prefix with real queries, so warming up also fills Ollama's cache. */
+  static final String WARM_UP_QUERY = "warm up";
+
   private static final Logger LOG = LoggerFactory.getLogger(QueryExpansionService.class);
 
   private static final String PROMPT_PREFIX =
@@ -73,6 +76,27 @@ public final class QueryExpansionService {
     List<String> terms = parse(answer);
     cache.put(key, terms);
     return terms;
+  }
+
+  /**
+   * Runs the expansion prompt once for {@link #WARM_UP_QUERY}, generating a single token, and
+   * caches nothing. After a memory-heavy phase such as an index build the host may have compressed
+   * or swapped out the idle model weights; paging them back in here keeps that delay off the next
+   * real query. Never throws: a failure is logged and ignored.
+   */
+  public void warmUp() {
+    long start = System.nanoTime();
+    try {
+      client.generate(prompt(WARM_UP_QUERY), 1);
+      LOG.info("Ollama warm-up took {} ms", (System.nanoTime() - start) / 1_000_000);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (IOException | RuntimeException e) {
+      LOG.warn(
+          "Ollama warm-up failed after {} ms: {}",
+          (System.nanoTime() - start) / 1_000_000,
+          e.toString());
+    }
   }
 
   static String prompt(String query) {

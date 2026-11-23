@@ -48,6 +48,27 @@ class OllamaClientTest {
   }
 
   @Test
+  void generateSendsExactlyTheExpansionBody() throws Exception {
+    stub.respondWithText("x");
+    client.generate("the prompt");
+    assertEquals(
+        "{\"model\":\"llama3.2:3b\",\"prompt\":\"the prompt\",\"stream\":false,"
+            + "\"options\":{\"temperature\":0}}",
+        stub.lastGenerateBody.get());
+  }
+
+  @Test
+  void generateWithMaxTokensAddsNumPredict() throws Exception {
+    stub.respondWithText("x");
+    assertEquals("x", client.generate("the prompt", 1));
+    assertEquals(
+        "{\"model\":\"llama3.2:3b\",\"prompt\":\"the prompt\",\"stream\":false,"
+            + "\"options\":{\"temperature\":0,\"num_predict\":1}}",
+        stub.lastGenerateBody.get());
+    assertThrows(IllegalArgumentException.class, () -> client.generate("p", 0));
+  }
+
+  @Test
   void generateFailsOnErrorStatus() {
     stub.generateStatus = 500;
     stub.generateBody = "{\"error\": \"model not found\"}";

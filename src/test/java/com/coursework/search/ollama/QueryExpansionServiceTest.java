@@ -3,6 +3,7 @@ package com.coursework.search.ollama;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -164,6 +165,43 @@ class QueryExpansionServiceTest {
       port = socket.getLocalPort();
     }
     assertEquals(List.of(), serviceFor("http://127.0.0.1:" + port).expand("q"));
+  }
+
+  @Test
+  void warmUpSendsTheExpansionPromptForOneTokenAndCachesNothing() throws Exception {
+    QueryExpansionCache cache = new QueryExpansionCache();
+    OllamaClient client =
+        new OllamaClient(stub.url(), "llama3.2:3b", Duration.ofMillis(300), Duration.ofMillis(300));
+    QueryExpansionService warmed = new QueryExpansionService(client, cache);
+    stub.respondWithText("horror, thriller");
+
+    warmed.warmUp();
+    assertEquals(0, cache.size());
+    assertEquals(1, stub.generateCalls.get());
+    JsonNode sent = new ObjectMapper().readTree(stub.lastGenerateBody.get());
+    assertEquals(
+        QueryExpansionService.prompt(QueryExpansionService.WARM_UP_QUERY),
+        sent.get("prompt").asText());
+    assertEquals(1, sent.get("options").get("num_predict").asInt());
+    assertEquals(0, sent.get("options").get("temperature").asInt());
+
+    // The real query is still asked, not answered from anything the warm-up left behind.
+    assertEquals(List.of("horror", "thriller"), warmed.expand("warm up"));
+    assertEquals(2, stub.generateCalls.get());
+  }
+
+  @Test
+  void warmUpNeverThrows() throws IOException {
+    int port;
+    try (ServerSocket socket = new ServerSocket(0)) {
+      port = socket.getLocalPort();
+    }
+    serviceFor("http://127.0.0.1:" + port).warmUp();
+    stub.generateStatus = 500;
+    service.warmUp();
+    stub.generateStatus = 200;
+    stub.holdGenerate = true;
+    service.warmUp();
   }
 
   @Test
