@@ -189,20 +189,22 @@ docker compose up -d --force-recreate ollama ollama-init
   warmed up again by `ollama-init`.
 - Output: `bench/e3_num_parallel.csv` (the E2 columns plus `num_parallel`) and
   `bench/e3_num_parallel.png` with WebSocket throughput and the share of answers that carried an
-  expansion, per client count and setting (mean of 3 trials, min-max).
+  expansion, per client count and setting (mean of 3 trials, min-max). On the plot the share is the
+  mean of the per-trial shares (with min-max), while the table below gives the share of the sums
+  over the three trials, so the two can differ by a few points.
 
 Results (2026-11-22, same machine as E1 and E2, 3 trials of 20 s):
 
 | Clients | req/s, 1 slot | req/s, 2 slots | expanded, 1 slot | expanded, 2 slots | p95, 1 slot | p95, 2 slots |
 |---|---|---|---|---|---|---|
-| 1 | 0.43 (0.30-0.60) | 0.32 (0.20-0.40) | 24 / 26 (89 %) | 15 / 19 (71 %) | 3.56 s | 4.21 s |
-| 2 | 0.43 (0.40-0.50) | 0.40 (0.40-0.40) | 21 / 26 (79 %) | 14 / 24 (58 %) | 5.04 s | 5.12 s |
+| 1 | 0.43 (0.30-0.60) | 0.32 (0.20-0.40) | 24 / 26 (92 %) | 15 / 19 (79 %) | 3.56 s | 4.21 s |
+| 2 | 0.43 (0.40-0.50) | 0.40 (0.40-0.40) | 21 / 26 (81 %) | 14 / 24 (58 %) | 5.04 s | 5.12 s |
 | 4 | 0.67 (0.65-0.70) | 0.68 (0.65-0.70) | 10 / 40 (25 %) | 7 / 41 (17 %) | 5.22 s | 5.46 s |
 | 8 | 1.30 (1.25-1.35) | 1.28 (1.25-1.30) | 7 / 78 (9 %) | 4 / 77 (5 %) | 5.13 s | 5.19 s |
 
 - **A second slot does not help; it makes expansions slightly rarer at every client count.**
   Throughput is unchanged (it is still set by the 5 s timeout and the pool), and the share of
-  expanded answers drops (79 % to 58 % at 2 clients). With two slots the successful Ollama calls
+  expanded answers drops (81 % to 58 % at 2 clients). With two slots the successful Ollama calls
   took 3.8 s in the median, against the 2-3 s seen for single calls earlier (the M6 manual run
   and Ollama's log during E2; recreating the `ollama` container dropped the log of this
   baseline). The model runs entirely on the CPU (`ollama ps`: `100% CPU`), and two parallel
@@ -213,6 +215,6 @@ Results (2026-11-22, same machine as E1 and E2, 3 trials of 20 s):
   a GPU, a smaller model, shorter answers, a longer timeout, or cache hits on repeated queries.
 - With two slots the model took 3.4 GB instead of 2.9 GB (a second KV cache), which next to the
   4.5 GB limit of `search` nearly fills the 7.75 GB VM; there was no OOM.
-- The one-slot baseline expanded more often than the same points of E2 (79 % against 33 % at 2
+- The one-slot baseline expanded more often than the same points of E2 (81 % against 33 % at 2
   clients): in E2 every WebSocket window followed 20 s of REST load on the same CPU, here it did
   not. That is why E3 measures its own baseline instead of reusing E2's numbers.
