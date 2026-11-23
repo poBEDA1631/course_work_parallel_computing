@@ -33,6 +33,67 @@ Services:
 | `dataset-init` | one-shot corpus download and preparation into the `dataset` volume, then exits |
 | `search` | backend and static Web UI, starts after `dataset-init` completes; restarts after a crash (without an index) |
 
+## Requirements and known limits
+
+**Memory and disk.** The Docker VM must hold the `search` container, capped at 4.5 GB
+(`mem_limit` in `docker-compose.yml`), next to the loaded `llama3.2:3b` model in `ollama`,
+measured at 2.9 GB ([E3](bench/README.md#e3-bottlenecks)). Everything in this repository was
+measured with Docker Desktop given 8 vCPU and a 7.75 GB VM; with less memory a container can be
+killed for running out of it. On disk: the corpus, 1.5 GB in the `dataset` volume
+([Dataset](#dataset)), the model, about 2 GB in `ollama-models` ([Running](#running)), and the
+images (`docker images` shows their size).
+
+**First start.** `search` waits until `dataset-init` has exited successfully, so on a fresh
+clone `/api/health` does not answer until the corpus is ready (about 15 minutes in testing,
+see [Dataset](#dataset)). The model is pulled at the same time and is not waited for: `search`
+answers with `"ollama": false` until it is loaded. To follow the corpus download:
+
+```sh
+docker compose logs -f dataset-init
+```
+
+Later starts download nothing: `dataset-init` finds `.complete` in the volume, logs `dataset
+already complete in /data, nothing to do` and exits.
+
+**Duration of `POST /api/index`.** There is no index until the first build, and the request
+answers only when the build is finished. On the full corpus that took from 151.4 s with 1 thread
+down to 23.4 s with 16 threads on the E1 machine (MacBook M1 Pro, 8 vCPU, 7.75 GB VM; see
+[E1](bench/README.md#e1-build-time-against-threads)), so the client has to wait long enough:
+
+```sh
+curl --max-time 600 -X POST localhost:8080/api/index \
+  -H 'Content-Type: application/json' -d '{"threads": 8}'
+```
+
+A smaller corpus builds faster: set `DATASET_MAX_BYTES` (bytes, default `1500000000`). It is read
+only while the corpus is being prepared, so once `.complete` exists the `dataset` volume has to be
+removed first. `docker compose down -v` removes it, together with the downloaded model:
+
+```sh
+docker compose down -v
+DATASET_MAX_BYTES=300000000 docker compose up -d --build
+```
+
+To keep the model, remove only the corpus volume, named after the project directory
+(`course_work_parallel_computing_dataset` for a default clone):
+`docker compose down && docker volume rm course_work_parallel_computing_dataset`.
+
+**Dataset source.** The corpus is downloaded from the Amazon Reviews 2023 server
+(`https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/`, the `review_categories/`
+and `meta_categories/` files). A dropped connection is resumed (see [Dataset](#dataset)). If the
+server cannot be reached at all, or a dropped download still fails after 5 resumes in a row,
+`dataset-init` exits with status 1, and `search` does not start: it depends on `dataset-init` with
+`service_completed_successfully`. In that case check the cause and run `docker compose up -d`
+again later:
+
+```sh
+docker compose logs dataset-init
+```
+
+A failed run does not write `.complete`. The files it has written stay in the volume until the
+next run, which deletes them and builds the corpus again from the beginning, downloading
+everything anew.
+
 ## Dataset
 
 Source: [Amazon Reviews 2023](https://amazon-reviews-2023.github.io) (McAuley Lab, UCSD),
