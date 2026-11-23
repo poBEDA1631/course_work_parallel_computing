@@ -135,19 +135,22 @@ Screenshots (`docs/`, taken against the full corpus of 611,120 documents):
 - [Command-line client](docs/cli_output.png): `./search kanye west` in a terminal, printing the
   expansion and the ranked results as the stages arrive.
 
-Diagrams (PlantUML sources in `docs/`):
+Diagrams (rendered SVG in `docs/`, each next to its PlantUML source):
 
-- [Use cases](docs/use_case.puml): what a user does through the Web UI, the CLI or the API, and
-  which use cases depend on Ollama.
-- [Building the index](docs/sequence_build_index.puml): `POST /api/index` from `ApiServer`
+- [Use cases](docs/use_case.svg) ([source](docs/use_case.puml)): what a user does through the
+  Web UI, the CLI or the API, and which use cases depend on Ollama.
+- [Building the index](docs/sequence_build_index.svg)
+  ([source](docs/sequence_build_index.puml)): `POST /api/index` from `ApiServer`
   through `IndexService` and `IndexBuilder` to the thread pool and the per-shard merge.
-- [Search with expansion](docs/sequence_search_expansion.puml): a `/ws/search` request when
+- [Search with expansion](docs/sequence_search_expansion.svg)
+  ([source](docs/sequence_search_expansion.puml)): a `/ws/search` request when
   Ollama answers in time, through the three stages `query_expansion`, `keyword_search`, `done`.
-- [Search when Ollama fails](docs/sequence_search_expansion_fallback.puml): the same request when
+- [Search when Ollama fails](docs/sequence_search_expansion_fallback.svg)
+  ([source](docs/sequence_search_expansion_fallback.puml)): the same request when
   Ollama times out, is unreachable or answers with an error, and the search runs on the original
   query.
-- [Deployment](docs/deployment.puml): the four Compose services, their volumes, the network and
-  the start-up dependencies.
+- [Deployment](docs/deployment.svg) ([source](docs/deployment.puml)): the four Compose services,
+  their volumes, the network and the start-up dependencies.
 
 ## Building locally
 
